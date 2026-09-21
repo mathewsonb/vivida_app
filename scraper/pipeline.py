@@ -14,11 +14,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configuration
-SUPABASE_URL = os.getenv("SUPABASE_URL")
+VITE_SUPABASE_URL = os.getenv("VITE_SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+supabase: Client = create_client(VITE_SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 # Initialize the Gemini Client
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
