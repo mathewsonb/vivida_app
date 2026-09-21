@@ -29,7 +29,7 @@ export default function App() {
   useEffect(() => {
     let activeKey = localStorage.getItem('vivida_session_key');
     if (!activeKey) {
-      activeKey = 'sess_' + crypto.randomUUID();
+      activeKey = crypto.randomUUID();
       localStorage.setItem('vivida_session_key', activeKey);
     }
     setSessionKey(activeKey);
