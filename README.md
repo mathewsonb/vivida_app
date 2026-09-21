@@ -55,3 +55,12 @@ Built around the philosophy that you shouldn't have to navigate a complex direct
 │   └── migrations/         # PostgreSQL schema, RLS policies, and purge functions
 ├── index.html              # Core application entrypoint
 └── README.md               # Project documentation
+```
+---
+
+## 🚀 Quickstart
+
+1. **Install dependencies:**
+   ```bash
+   npm install
+   cd scraper && pip install -r requirements.txt && cd ..
