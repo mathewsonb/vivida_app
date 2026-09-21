@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { supabase } from './lib/supabase';
+import { supabase } from './lib/supabaseClient.js';
 import Header from './components/Header';
 import MoodSliders from './components/MoodSliders';
 import SwipeDeck from './components/SwipeDeck';
