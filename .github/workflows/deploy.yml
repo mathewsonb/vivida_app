@@ -17,10 +17,6 @@ concurrency:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    # This line grants the job access to "github-pages" Environment Secrets:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - name: Checkout Code
@@ -35,7 +31,9 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      - name: Debug Environment Secrets (Sanity Check)
+      - name: Sanity Check Secrets Resolution
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
         run: |
           if [ -z "$VITE_SUPABASE_URL" ]; then
             echo "ERROR: VITE_SUPABASE_URL is EMPTY in Actions workflow!"
@@ -45,7 +43,6 @@ jobs:
           fi
 
       - name: Build Project
-        # Define job-level environment variables directly
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
@@ -63,4 +60,5 @@ jobs:
 
       - name: Deploy to GitHub Pages
         id: deployment
+        # Note: environment scope is handled internally by deploy-pages action here
         uses: actions/deploy-pages@v4
