@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase } from '../lib/supabaseClient.js';
 import { Sparkles, Heart, Bookmark, Activity, MailCheck, Send, Loader2 } from 'lucide-react';
 
 export default function UserHistoryReport({ userHash, onClearSession }) {
