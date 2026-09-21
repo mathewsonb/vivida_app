@@ -69,27 +69,36 @@ export default function App() {
   const handleInteraction = async (type, event) => {
     if (!event) return;
 
-    // 1. Optimistic UI Update: Remove card from stack
+    // 1. Optimistic UI Update
     setEvents((prev) => prev.filter((e) => e.id !== event.id));
 
-    // 2. Add to local Bookmarks state if it's a positive or 'maybe' vibe
+    // 2. Bookmarks Update
     if (type === 'interested' || type === 'totally_vibe' || type === 'maybe_later') {
       setBookmarks((prev) => [...prev, event]);
     }
 
-    // 3. Persist interaction & slider state vectors to database
-    try {
-      await supabase.from('event_conversions').insert({
-        session_id: sessionKey,
-        email_hash: userHash || null,
-        event_id: event.id,
-        interaction_type: type, // 'totally_vibe' | 'maybe_later' | 'not_my_scene'
-        target_energy: mood.energy,
-        target_social: mood.social,
-        target_novelty: mood.novelty,
-      });
-    } catch (err) {
-      console.warn('Conversion logging notice:', err.message);
+    // 3. Log interaction to Supabase with direct error catch
+    const payload = {
+      session_id: sessionKey,
+      email_hash: userHash || null,
+      event_id: event.id,
+      interaction_type: type,
+      target_energy: mood.energy,
+      target_social: mood.social,
+      target_novelty: mood.novelty,
+    };
+
+    console.log('Inserting payload into event_conversions:', payload);
+
+    const { data, error } = await supabase
+      .from('event_conversions')
+      .insert(payload)
+      .select(); // Calling .select() returns the newly created row for confirmation
+
+    if (error) {
+      console.error('Supabase Insert Error:', error.message, error.details, error.hint);
+    } else {
+      console.log('Successfully inserted conversion record:', data);
     }
   };
 
