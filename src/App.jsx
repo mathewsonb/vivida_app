@@ -79,7 +79,7 @@ export default function App() {
     try {
       await supabase.from('event_conversions').insert({
         session_id: sessionKey,
-        user_hash: userHash || null,
+        email_hash: userHash || null,
         event_id: event.id,
         interaction_type: type, // 'totally_vibe' | 'maybe_later' | 'not_my_scene'
         target_energy: mood.energy,
