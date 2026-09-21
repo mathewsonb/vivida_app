@@ -1,9 +1,9 @@
-name: Deploy Vivida Frontend
+name: Deploy Vivida Frontend to GitHub Pages
 
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -15,16 +15,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    # This line grants the job access to "github-pages" Environment Secrets:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -33,13 +35,28 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      - name: Build React Application
+      - name: Debug Environment Secrets (Sanity Check)
+        run: |
+          if [ -z "$VITE_SUPABASE_URL" ]; then
+            echo "ERROR: VITE_SUPABASE_URL is EMPTY in Actions workflow!"
+            exit 1
+          else
+            echo "SUCCESS: VITE_SUPABASE_URL is populated."
+          fi
+
+      - name: Build Project
+        # Define job-level environment variables directly
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
-        run: npm run build
+        run: |
+          npm run build
+          cp dist/index.html dist/404.html
 
-      - name: Upload Pages Artifact
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Build Artifacts
         uses: actions/upload-pages-artifact@v3
         with:
           path: './dist'
