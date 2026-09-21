@@ -1,5 +1,5 @@
 // src/lib/crypto.js
-const APP_SALT = import.meta.env.VITE_APP_SALT || 'vivida_default_salt_2026';
+const APP_SALT = import.meta.env.VITE_APP_SALT;
 
 /**
  * Normalizes email and produces SHA-256 hash combined with APP_SALT
