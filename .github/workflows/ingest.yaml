@@ -1,0 +1,40 @@
+name: Event Ingestion Pipeline (Gemini Engine)
+
+on:
+  schedule:
+    - cron: '0 */12 * * *' # Every 12 hours
+  workflow_dispatch: # Manual trigger button in GitHub Actions UI
+
+jobs:
+  harvest:
+    name: Run Ingestion Pipeline
+    runs-on: ubuntu-latest
+
+    # 1. LINK TO YOUR GITHUB ENVIRONMENT HERE
+    environment: production
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          cd scraper
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Pipeline
+        # 2. MAP SECRETS AND VARIABLES FROM ENVIRONMENT TO PROCESS ENV
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DEFAULT_CITY: ${{ vars.DEFAULT_CITY }}
+          MAX_EVENTS_PER_RUN: ${{ vars.MAX_EVENTS_PER_RUN }}
+        run: |
+          python scraper/pipeline.py

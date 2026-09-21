@@ -1,0 +1,16 @@
+# Local Environment Variables & Secrets (NEVER COMMIT THIS)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Python Scraper Virtual Envs & Local Cache
+scraper/venv/
+scraper/__pycache__/
+*.pyc
+
+# Node / Build Dependencies
+node_modules/
+dist/
+build/
