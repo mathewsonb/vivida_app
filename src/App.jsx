@@ -4,6 +4,7 @@ import Header from './components/Header';
 import MoodSliders from './components/MoodSliders';
 import SwipeDeck from './components/SwipeDeck';
 import { ThumbsDown, Heart, Flame, Share2, Sparkles } from 'lucide-react';
+import { useMemo } from 'react';
 
 // Initialize Supabase Client from environment
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
@@ -58,18 +59,20 @@ export default function App() {
   const handleInteraction = async (type, event) => {
     if (!event) return;
 
-    // Local state optimistic update
+    // 1. Optimistic UI Update: Remove card from stack
     setEvents((prev) => prev.filter((e) => e.id !== event.id));
-    if (type === 'interested' || type === 'totally_vibe') {
+
+    // 2. Add to local Bookmarks state if it's a positive or 'maybe' vibe
+    if (type === 'interested' || type === 'totally_vibe' || type === 'maybe_later') {
       setBookmarks((prev) => [...prev, event]);
     }
 
-    // Persist interaction to database
+    // 3. Persist interaction & slider state vectors to database
     try {
       await supabase.from('event_conversions').insert({
         session_id: null, // Resolves via session key mapping procedure if needed
         event_id: event.id,
-        interaction_type: type,
+        interaction_type: type, // 'totally_vibe' | 'maybe_later' | 'not_my_scene'
         target_energy: mood.energy,
         target_social: mood.social,
         target_novelty: mood.novelty,
@@ -78,6 +81,39 @@ export default function App() {
       console.warn('Conversion logging notice:', err.message);
     }
   };
+
+  // Inside your main App component:
+  const rankedEvents = useMemo(() => {
+    if (!events || events.length === 0) return [];
+
+    return [...events].sort((a, b) => {
+      // Extract triaxial values for Event A
+      const eA = a.energy ?? a.energy_vector ?? 0.5;
+      const sA = a.social ?? a.social_vector ?? 0.5;
+      const nA = a.novelty ?? a.novelty_vector ?? 0.5;
+
+      // Extract triaxial values for Event B
+      const eB = b.energy ?? b.energy_vector ?? 0.5;
+      const sB = b.social ?? b.social_vector ?? 0.5;
+      const nB = b.novelty ?? b.novelty_vector ?? 0.5;
+
+      // Calculate Euclidean distances from current slider mood
+      const distA = Math.sqrt(
+        Math.pow(mood.energy - eA, 2) +
+        Math.pow(mood.social - sA, 2) +
+        Math.pow(mood.novelty - nA, 2)
+      );
+
+      const distB = Math.sqrt(
+        Math.pow(mood.energy - eB, 2) +
+        Math.pow(mood.social - sB, 2) +
+        Math.pow(mood.novelty - nB, 2)
+      );
+
+      // Sort in ascending order of distance (smallest distance = highest match score first)
+      return distA - distB;
+    });
+  }, [events, mood]);
 
   return (
     <div className="min-h-screen bg-parchment-50 text-parchment-900 flex flex-col font-sans">
@@ -101,7 +137,11 @@ export default function App() {
               <span className="text-xs font-medium">Fetching hyper-local pulse...</span>
             </div>
           ) : (
-            <SwipeDeck events={events} mood={mood} onSwipe={handleInteraction} />
+            <SwipeDeck 
+              events={rankedEvents} 
+              mood={mood} 
+              onSwipe={(type, event) => handleInteraction(type, event)} 
+            />
           )}
         </div>
 
