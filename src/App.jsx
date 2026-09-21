@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import Header from './components/Header';
 import MoodSliders from './components/MoodSliders';
 import SwipeDeck from './components/SwipeDeck';
-import { ThumbsDown, Heart, Flame, Share2, Sparkles } from 'lucide-react';
-import { useMemo } from 'react';
+import HistoryModal from './components/HistoryModal';
+import { ThumbsDown, Heart, Flame, Sparkles } from 'lucide-react';
 
 // Initialize Supabase Client from environment
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
@@ -15,6 +15,8 @@ export default function App() {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sessionKey, setSessionKey] = useState('');
+  const [userHash, setUserHash] = useState(null);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [bookmarks, setBookmarks] = useState([]);
   
   // Triaxial Mood Vector State
@@ -24,7 +26,7 @@ export default function App() {
     novelty: 0.5,
   });
 
-  // Initialize Ephemeral Session Key (6-Month Lifecycle)
+  // Initialize Session Key and User Hash on Mount
   useEffect(() => {
     let activeKey = localStorage.getItem('vivida_session_key');
     if (!activeKey) {
@@ -32,6 +34,12 @@ export default function App() {
       localStorage.setItem('vivida_session_key', activeKey);
     }
     setSessionKey(activeKey);
+
+    const storedHash = localStorage.getItem('vivida_user_hash');
+    if (storedHash) {
+      setUserHash(storedHash);
+    }
+
     fetchEvents();
   }, []);
 
@@ -70,7 +78,8 @@ export default function App() {
     // 3. Persist interaction & slider state vectors to database
     try {
       await supabase.from('event_conversions').insert({
-        session_id: null, // Resolves via session key mapping procedure if needed
+        session_id: sessionKey,
+        user_hash: userHash || null,
         event_id: event.id,
         interaction_type: type, // 'totally_vibe' | 'maybe_later' | 'not_my_scene'
         target_energy: mood.energy,
@@ -80,24 +89,26 @@ export default function App() {
     } catch (err) {
       console.warn('Conversion logging notice:', err.message);
     }
+
+    // 4. Prompt for Email Opt-In contextually if user lacks hash on positive vibes
+    if (!userHash && (type === 'totally_vibe' || type === 'interested')) {
+      setIsHistoryOpen(true);
+    }
   };
 
-  // Inside your main App component:
+  // Distance Sorting via Euclidean Triaxial Mood Vectors
   const rankedEvents = useMemo(() => {
     if (!events || events.length === 0) return [];
 
     return [...events].sort((a, b) => {
-      // Extract triaxial values for Event A
       const eA = a.energy ?? a.energy_vector ?? 0.5;
       const sA = a.social ?? a.social_vector ?? 0.5;
       const nA = a.novelty ?? a.novelty_vector ?? 0.5;
 
-      // Extract triaxial values for Event B
       const eB = b.energy ?? b.energy_vector ?? 0.5;
       const sB = b.social ?? b.social_vector ?? 0.5;
       const nB = b.novelty ?? b.novelty_vector ?? 0.5;
 
-      // Calculate Euclidean distances from current slider mood
       const distA = Math.sqrt(
         Math.pow(mood.energy - eA, 2) +
         Math.pow(mood.social - sA, 2) +
@@ -110,18 +121,18 @@ export default function App() {
         Math.pow(mood.novelty - nB, 2)
       );
 
-      // Sort in ascending order of distance (smallest distance = highest match score first)
       return distA - distB;
     });
   }, [events, mood]);
 
   return (
     <div className="min-h-screen bg-parchment-50 text-parchment-900 flex flex-col font-sans">
-      {/* Header */}
+      {/* Header with Modal Trigger */}
       <Header 
         onOpenBookmarks={() => alert(`Saved events: ${bookmarks.length}`)}
-        onOpenHistory={() => alert('History reconstruction triggered.')}
+        onOpenHistory={() => setIsHistoryOpen(true)}
         bookmarkCount={bookmarks.length}
+        hasUserHash={!!userHash}
       />
 
       {/* Main Container */}
@@ -146,10 +157,10 @@ export default function App() {
         </div>
 
         {/* 3-Button Interaction Footer */}
-        {events.length > 0 && (
+        {rankedEvents.length > 0 && (
           <div className="flex items-center justify-center gap-4 my-4">
             <button
-              onClick={() => handleInteraction('not_my_scene', events[0])}
+              onClick={() => handleInteraction('not_my_scene', rankedEvents[0])}
               className="w-14 h-14 rounded-full bg-white border border-parchment-200 shadow-md flex items-center justify-center text-rose-600 hover:bg-rose-50 transition-colors"
               title="Not My Scene"
             >
@@ -157,7 +168,7 @@ export default function App() {
             </button>
 
             <button
-              onClick={() => handleInteraction('interested', events[0])}
+              onClick={() => handleInteraction('interested', rankedEvents[0])}
               className="w-12 h-12 rounded-full bg-white border border-parchment-200 shadow-md flex items-center justify-center text-amber-600 hover:bg-amber-50 transition-colors"
               title="Interested"
             >
@@ -165,7 +176,7 @@ export default function App() {
             </button>
 
             <button
-              onClick={() => handleInteraction('totally_vibe', events[0])}
+              onClick={() => handleInteraction('totally_vibe', rankedEvents[0])}
               className="w-14 h-14 rounded-full bg-terracotta text-white shadow-lg flex items-center justify-center hover:bg-terracotta-hover transition-colors"
               title="Totally My Vibe"
             >
@@ -174,6 +185,17 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* Zero-PII History & Opt-In Modal Container */}
+      <HistoryModal
+        isOpen={isHistoryOpen}
+        onClose={() => setIsHistoryOpen(false)}
+        userHash={userHash}
+        onUserHashCreated={(newHash) => {
+          setUserHash(newHash);
+          localStorage.setItem('vivida_user_hash', newHash);
+        }}
+      />
     </div>
   );
 }
