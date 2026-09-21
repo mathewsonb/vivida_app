@@ -1,22 +1,21 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from './lib/supabase';
 import Header from './components/Header';
 import MoodSliders from './components/MoodSliders';
 import SwipeDeck from './components/SwipeDeck';
 import HistoryModal from './components/HistoryModal';
+import EmailPromptModal from './components/EmailPromptModal';
 import { ThumbsDown, Heart, Flame, Sparkles } from 'lucide-react';
-
-// Initialize Supabase Client from environment
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 export default function App() {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sessionKey, setSessionKey] = useState('');
   const [userHash, setUserHash] = useState(null);
+  
+  // Modals state
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [isInitialPromptOpen, setIsInitialPromptOpen] = useState(false);
   const [bookmarks, setBookmarks] = useState([]);
   
   // Triaxial Mood Vector State
@@ -26,7 +25,7 @@ export default function App() {
     novelty: 0.5,
   });
 
-  // Initialize Session Key and User Hash on Mount
+  // Initialize Session Key, User Hash, and Initial Prompt on Mount
   useEffect(() => {
     let activeKey = localStorage.getItem('vivida_session_key');
     if (!activeKey) {
@@ -38,6 +37,9 @@ export default function App() {
     const storedHash = localStorage.getItem('vivida_user_hash');
     if (storedHash) {
       setUserHash(storedHash);
+    } else {
+      // Prompt upfront on initial session load if no hash exists
+      setIsInitialPromptOpen(true);
     }
 
     fetchEvents();
@@ -88,11 +90,6 @@ export default function App() {
       });
     } catch (err) {
       console.warn('Conversion logging notice:', err.message);
-    }
-
-    // 4. Prompt for Email Opt-In contextually if user lacks hash on positive vibes
-    if (!userHash && (type === 'totally_vibe' || type === 'interested')) {
-      setIsHistoryOpen(true);
     }
   };
 
@@ -186,7 +183,20 @@ export default function App() {
         )}
       </main>
 
-      {/* Zero-PII History & Opt-In Modal Container */}
+      {/* Upfront Initial Email Onboarding Modal */}
+      {isInitialPromptOpen && (
+        <EmailPromptModal
+          isOpen={isInitialPromptOpen}
+          onClose={() => setIsInitialPromptOpen(false)}
+          onSuccess={(hash) => {
+            setUserHash(hash);
+            localStorage.setItem('vivida_user_hash', hash);
+            setIsInitialPromptOpen(false);
+          }}
+        />
+      )}
+
+      {/* Zero-PII History & Export Modal Container */}
       <HistoryModal
         isOpen={isHistoryOpen}
         onClose={() => setIsHistoryOpen(false)}
