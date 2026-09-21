@@ -45,8 +45,7 @@ Built around the philosophy that you shouldn't have to navigate a complex direct
 ├── src/
 │   ├── components/         # React components (SwipeDeck, MoodSliders, Modals)
 │   ├── hooks/              # Custom hooks for vector scoring & hash generation
-│   ├── lib/                # Supabase client & crypto utilities
-│   └── styles/             # Tailwind theme configurations & parchment design system
+│   └── lib/                # Supabase client & crypto utilities
 ├── scraper/
 │   ├── extractors/         # Site-specific & schema event scrapers
 │   ├── pipeline.py         # Deduplication & LLM vectorization scripts
