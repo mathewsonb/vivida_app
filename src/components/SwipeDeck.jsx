@@ -154,7 +154,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
             </div>
 
             {/* EVENT DETAILS */}
-            <div className="p-5">
+            <div className="p-5 sm:p-6 flex-1 flex flex-col justify-between space-y-4">
               <h2 className="font-serif text-xl font-bold text-parchment-900 leading-tight mb-2">
                 {activeEvent.title}
               </h2>
