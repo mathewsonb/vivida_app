@@ -106,7 +106,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
           {/* Right: Totally My Vibe */}
           <motion.div
             style={{ opacity: swipeVibeOpacity }}
-            className="absolute top-6 right-6 border-[3px] border-emerald-600 text-emerald-600 font-extrabold tracking-wider px-3 py-1 rounded-xl rotate-12 pointer-events-none z-30 bg-white/90 backdrop-blur-sm shadow-xl"
+            className="absolute top-6 right-6 border-[3px] border-emerald-600 text-emerald-600 font-extrabold tracking-wider px-3 py-1 rounded-xl rotate-12 pointer-events-none z-30 bg-white/90 backdrop-blur-xl shadow-xl"
           >
             TOTALLY MY VIBE
           </motion.div>
@@ -114,7 +114,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
           {/* Left: Not My Scene */}
           <motion.div
             style={{ opacity: swipeRejectOpacity }}
-            className="absolute top-6 left-6 border-[3px] border-rose-600 text-rose-600 font-extrabold tracking-wider px-3 py-1 rounded-xl -rotate-12 pointer-events-none z-30 bg-white/90 backdrop-blur-sm shadow-xl"
+            className="absolute top-6 left-6 border-[3px] border-rose-600 text-rose-600 font-extrabold tracking-wider px-3 py-1 rounded-xl -rotate-12 pointer-events-none z-30 bg-white/90 backdrop-blur-xl shadow-xl"
           >
             NOT MY SCENE
           </motion.div>
@@ -130,7 +130,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
           
           <motion.div
             style={{ opacity: swipeMaybeOpacity }}
-            className="absolute top-6 left-1/2 -translate-x-1/2 border-[3px] border-amber-600 text-amber-600 font-extrabold tracking-wider px-5 py-2 rounded-xl pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-xl flex items-center gap-2 text-sm sm:text-base drop-shadow-sm"
+            className="absolute top-6 left-1/2 -translate-x-1/2 border-[3px] border-amber-600 text-amber-600 font-extrabold tracking-wider px-5 py-2 rounded-xl pointer-events-none z-30 bg-white/95 backdrop-blur-xl shadow-xl flex items-center gap-2 text-sm sm:text-base drop-shadow-sm"
           >
             <Bookmark className="w-5 h-5 fill-amber-600 stroke-[2.5]" />
             MAYBE LATER
