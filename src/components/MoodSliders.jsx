@@ -11,7 +11,7 @@ export default function MoodSliders({ mood, onChange }) {
 
   return (
     <div className="bg-parchment-100 border border-parchment-200 rounded-2xl p-4 shadow-sm space-y-3 my-2">
-      <div className="flex justify-between items-center mb-1">
+      {/* <div className="flex justify-between items-center mb-1">
         <span className="text-xs uppercase font-bold tracking-wider text-parchment-800 flex items-center gap-1">
           <span className="w-2 h-2 rounded-full bg-terracotta animate-pulse" />
           Triaxial Mood Target
@@ -19,7 +19,7 @@ export default function MoodSliders({ mood, onChange }) {
         <span className="text-[11px] font-mono text-terracotta font-semibold">
           E:{(mood.energy * 100).toFixed(0)}% | S:{(mood.social * 100).toFixed(0)}% | N:{(mood.novelty * 100).toFixed(0)}%
         </span>
-      </div>
+      </div> */}
 
       {/* Energy Slider */}
       <div className="space-y-1">
