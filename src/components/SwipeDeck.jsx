@@ -181,9 +181,28 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
               <div className="flex items-center gap-2">
                 <Calendar className="w-4 h-4 text-terracotta shrink-0" />
                 <span>
-                  {new Date(activeEvent.start_time).toLocaleDateString('en-US', { 
-                    weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' 
-                  })}
+                  {(() => {
+                    const options = { 
+                      weekday: 'short', 
+                      month: 'short', 
+                      day: 'numeric', 
+                      hour: 'numeric', 
+                      minute: '2-digit' 
+                    };
+
+                    // Split comma-separated string and trim whitespace from entries
+                    const dateList = activeEvent.start_time
+                      ? activeEvent.start_time.split(',').map(s => s.strip ? s.strip() : s.trim())
+                      : [];
+
+                    const formattedDates = dateList
+                      .map(d => new Date(d))
+                      .filter(d => !isNaN(d.getTime())) // Filter out invalid dates
+                      .map(d => d.toLocaleDateString('en-US', options));
+
+                    // Joined by " - " if 2 dates exist, or outputs single date if only 1
+                    return formattedDates.join(' - ');
+                  })()}
                 </span>
               </div>
 
