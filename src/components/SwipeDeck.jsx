@@ -88,7 +88,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
     : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(venue + ' ' + (activeEvent.address || 'Tacoma, WA'))}`;
 
   return (
-    <div className="relative h-[560px] w-full flex items-center justify-center">
+    <div className="relative w-full max-w-md mx-auto min-h-[450px] my-auto">
       <AnimatePresence>
           <motion.div
             key={activeEvent.id}
@@ -100,7 +100,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
             drag
             dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
             onDragEnd={handleDragEnd}
-            className="absolute inset-0 bg-white border border-parchment-200 rounded-3xl shadow-xl flex flex-col justify-between cursor-grab active:cursor-grabbing select-none overflow-hidden"
+            className="relative w-full min-h-[420px] bg-white border border-parchment-200 rounded-3xl shadow-xl flex flex-col justify-between cursor-grab active:cursor-grabbing select-none overflow-hidden transition-all duration-200"
           >
           {/* SWIPE OVERLAY INDICATORS */}
           {/* Right: Totally My Vibe */}
