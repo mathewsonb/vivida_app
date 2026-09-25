@@ -154,7 +154,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
             </div>
 
             {/* EVENT DETAILS */}
-            <div className="p-5">
+            <div className="p-5 sm:p-6 flex-1 flex flex-col justify-between space-y-4">
               <h2 className="font-serif text-xl font-bold text-parchment-900 leading-tight mb-2">
                 {activeEvent.title}
               </h2>
@@ -185,22 +185,15 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
                     const options = { 
                       weekday: 'short', 
                       month: 'short', 
-                      day: 'numeric', 
-                      hour: 'numeric', 
-                      minute: '2-digit' 
+                      day: 'numeric' 
                     };
 
-                    // Split comma-separated string and trim whitespace from entries
-                    const dateList = activeEvent.start_time
-                      ? activeEvent.start_time.split(',').map(s => s.strip ? s.strip() : s.trim())
-                      : [];
-
-                    const formattedDates = dateList
-                      .map(d => new Date(d))
-                      .filter(d => !isNaN(d.getTime())) // Filter out invalid dates
+                    const formattedDates = (activeEvent.start_time || '')
+                      .split(',')
+                      .map(s => new Date(s.trim()))
+                      .filter(d => !isNaN(d.getTime()))
                       .map(d => d.toLocaleDateString('en-US', options));
 
-                    // Joined by " - " if 2 dates exist, or outputs single date if only 1
                     return formattedDates.join(' - ');
                   })()}
                 </span>
