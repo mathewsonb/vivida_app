@@ -185,22 +185,15 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
                     const options = { 
                       weekday: 'short', 
                       month: 'short', 
-                      day: 'numeric', 
-                      hour: 'numeric', 
-                      minute: '2-digit' 
+                      day: 'numeric' 
                     };
 
-                    // Split comma-separated string and trim whitespace from entries
-                    const dateList = activeEvent.start_time
-                      ? activeEvent.start_time.split(',').map(s => s.strip ? s.strip() : s.trim())
-                      : [];
-
-                    const formattedDates = dateList
-                      .map(d => new Date(d))
-                      .filter(d => !isNaN(d.getTime())) // Filter out invalid dates
+                    const formattedDates = (activeEvent.start_time || '')
+                      .split(',')
+                      .map(s => new Date(s.trim()))
+                      .filter(d => !isNaN(d.getTime()))
                       .map(d => d.toLocaleDateString('en-US', options));
 
-                    // Joined by " - " if 2 dates exist, or outputs single date if only 1
                     return formattedDates.join(' - ');
                   })()}
                 </span>
