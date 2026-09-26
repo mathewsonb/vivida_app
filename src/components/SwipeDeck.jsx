@@ -77,8 +77,8 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
     } 
     // 4. Threshold NOT met -> Snap back smoothly to center
     else {
-      animate(x, 0, { type: 'spring', stiffness: 500, damping: 30 });
-      animate(y, 0, { type: 'spring', stiffness: 500, damping: 30 });
+      animate(x, 0, { type: 'spring', stiffness: 300, damping: 28 });
+      animate(y, 0, { type: 'spring', stiffness: 300, damping: 28 });
     }
   };
 
@@ -95,7 +95,13 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
             initial={{ scale: 0.95, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0.95, opacity: 0 }}
-            transition={{ duration: 0.2 }}
+            transition={{
+              type: "spring",
+              stiffness: 300, // Lower stiffness reduces jerky physics calculations (default is ~400)
+              damping: 28,    // Prevents oscillation/bounciness at the end of the swipe
+              mass: 0.8,      // Lighter mass makes the card respond faster with less inertia
+              duration: 0.2
+            }}
             style={{ x, y, rotate, opacity }}
             drag
             dragDirectionLock // Locks gesture to either X or Y axis based on initial movement direction
