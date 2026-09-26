@@ -1,5 +1,5 @@
-// src/components/EmailPromptModal.jsx
 import React, { useState } from 'react';
+import { hashEmail } from '../lib/crypto';
 import { Mail, Sparkles, ShieldCheck, X } from 'lucide-react';
 
 export default function EmailPromptModal({ isOpen, onClose, onSuccess }) {
@@ -14,20 +14,8 @@ export default function EmailPromptModal({ isOpen, onClose, onSuccess }) {
 
     setIsSubmitting(true);
     try {
-      // 1. Normalize email (lowercase & trimmed)
-      const normalized = email.trim().toLowerCase();
-
-      // 2. Hash using browser native Web Crypto SHA-256 API
-      const encoder = new TextEncoder();
-      const data = encoder.encode(normalized);
-      const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-
-      // 3. Convert ArrayBuffer to Hex string
-      const hashArray = Array.from(new Uint8Array(hashBuffer));
-      const hexHash = hashArray
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join('');
-
+      // Standardized client-side hashing via lib/crypto
+      const hexHash = await hashEmail(email);
       onSuccess(hexHash);
     } catch (err) {
       console.error('Error generating hash:', err);

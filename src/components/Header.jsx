@@ -1,54 +1,110 @@
-import React from 'react';
-import { Sparkles, Bookmark, Clock } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { SlidersHorizontal, Bookmark, History, ChevronUp, Sparkles } from 'lucide-react';
+import MoodSliders from './MoodSliders';
 
-export default function Header({ onOpenBookmarks, onOpenHistory, bookmarkCount = 0 }) {
+export default function Header({ mood, onChangeMood, onOpenHistory, onOpenSaved, bookmarkCount, hasUserHash }) {
+  const [isSlidersOpen, setIsSlidersOpen] = useState(false);
+  const collapseTimeoutRef = useRef(null);
+
+  const handleMoodChange = (newMood) => {
+    onChangeMood(newMood);
+
+    // Auto-collapse after 2.5 seconds of inactivity
+    if (collapseTimeoutRef.current) clearTimeout(collapseTimeoutRef.current);
+    collapseTimeoutRef.current = setTimeout(() => {
+      setIsSlidersOpen(false);
+    }, 2500);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (collapseTimeoutRef.current) clearTimeout(collapseTimeoutRef.current);
+    };
+  }, []);
+
   return (
-    <header className="sticky top-0 z-30 bg-parchment-50/90 backdrop-blur-md border-b border-parchment-200 px-4 py-3 transition-colors duration-300">
-      <div className="max-w-md mx-auto flex items-center justify-between">
-        {/* Left: History/Reconstruction Trigger */}
-        <button
-          onClick={onOpenHistory}
-          className="p-2 rounded-full hover:bg-parchment-100 text-parchment-800 transition-colors relative"
-          title="My Interaction History"
-        >
-          <Clock className="w-5 h-5" />
-        </button>
-
-        {/* Center: Concept 1 "Infinite Loop" Logo */}
-        <div className="flex flex-col items-center">
-          <div className="relative group cursor-pointer">
-            <h1 className="font-serif text-2xl font-bold tracking-tight text-parchment-900 flex items-center gap-1">
-              Vivida
-              <span className="text-terracotta text-xs font-sans tracking-widest uppercase font-semibold">.app</span>
-            </h1>
-            {/* Embedded Concept 1 SVG Loop Flourish */}
-            <svg 
-              className="w-24 h-4 text-terracotta transition-transform duration-300 group-hover:scale-105" 
-              viewBox="0 0 100 20" 
-              fill="none" 
-              stroke="currentColor" 
-              strokeWidth="2" 
-              strokeLinecap="round"
-            >
-              <path d="M 5 12 C 30 18, 70 18, 95 12 C 80 2, 40 22, 10 8" />
-            </svg>
+    <header className="sticky top-0 z-40 bg-parchment-50/95 backdrop-blur-md border-b border-parchment-200 shadow-sm">
+      <div className="max-w-md mx-auto px-4 py-3 flex items-center justify-between">
+        {/* Logo / Brand */}
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-xl bg-terracotta text-white flex items-center justify-center shadow-sm">
+            <Sparkles className="w-4 h-4 fill-white" />
           </div>
+          <span className="font-serif font-bold text-lg tracking-tight text-parchment-900">
+            Vivida
+          </span>
         </div>
 
-        {/* Right: Bookmarks Drawer Trigger */}
-        <button
-          onClick={onOpenBookmarks}
-          className="p-2 rounded-full hover:bg-parchment-100 text-parchment-800 transition-colors relative"
-          title="Saved Events"
-        >
-          <Bookmark className="w-5 h-5" />
-          {bookmarkCount > 0 && (
-            <span className="absolute top-1 right-1 bg-terracotta text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
-              {bookmarkCount}
-            </span>
-          )}
-        </button>
+        {/* Action Controls */}
+        <div className="flex items-center gap-2">
+          {/* Mood Slider Toggle */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsSlidersOpen((prev) => !prev);
+            }}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all ${
+              isSlidersOpen
+                ? 'bg-terracotta text-white border-terracotta shadow-sm'
+                : 'bg-white text-parchment-800 border-parchment-200 hover:border-terracotta/50'
+            }`}
+            title="Adjust Mood Vibe"
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5" />
+            <span>Vibe</span>
+          </button>
+
+          {/* Saved Events Button */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              onOpenSaved();
+            }}
+            className="relative p-2 rounded-full bg-white border border-parchment-200 text-parchment-800 hover:bg-parchment-100 transition-colors"
+            title="Saved Events"
+          >
+            <Bookmark className="w-4 h-4" />
+            {bookmarkCount > 0 && (
+              <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-terracotta text-white text-[10px] font-bold flex items-center justify-center shadow-xs">
+                {bookmarkCount}
+              </span>
+            )}
+          </button>
+
+          {/* History Button */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              onOpenHistory();
+            }}
+            className="p-2 rounded-full bg-white border border-parchment-200 text-parchment-800 hover:bg-parchment-100 transition-colors"
+            title="Interaction History"
+          >
+            <History className="w-4 h-4" />
+          </button>
+        </div>
       </div>
+
+      {/* Collapsible Drawer Area */}
+      {isSlidersOpen && (
+        <div className="border-t border-parchment-200/60 bg-parchment-100/90 px-4 py-3 shadow-inner">
+          <div className="max-w-md mx-auto">
+            <MoodSliders mood={mood} onChange={handleMoodChange} />
+            <button
+              type="button"
+              onClick={() => setIsSlidersOpen(false)}
+              className="mt-2 w-full flex items-center justify-center gap-1 text-[11px] font-medium text-parchment-700 hover:text-terracotta pt-1"
+            >
+              <span>Collapse controls</span>
+              <ChevronUp className="w-3 h-3" />
+            </button>
+          </div>
+        </div>
+      )}
     </header>
   );
 }
