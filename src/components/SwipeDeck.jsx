@@ -50,7 +50,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
   // Swipe Visual Overlay Opacities - Immediate Pop-In
   const swipeRejectOpacity = useTransform(x, [-20, -5], [1, 0]);
   const swipeVibeOpacity = useTransform(x, [5, 20], [0, 1]);
-  const swipeMaybeOpacity = useTransform(y, [-20, -5], [1, 0]); // Triggers on dragging upwar
+  const swipeMaybeOpacity = useTransform(y, [-20, -5], [1, 0]); // Triggers on dragging upward
 
   const handleDragEnd = (e, info) => {
     const offsetX = info.offset.x;
@@ -98,6 +98,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
             transition={{ duration: 0.2 }}
             style={{ x, y, rotate, opacity }}
             drag
+            dragDirectionLock // Locks gesture to either X or Y axis based on initial movement direction
             dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
             onDragEnd={handleDragEnd}
             className="relative w-full min-h-[420px] bg-white border border-parchment-200 rounded-3xl shadow-xl flex flex-col justify-between cursor-grab active:cursor-grabbing select-none overflow-hidden transition-all duration-200"
@@ -106,7 +107,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
           {/* Right: Totally My Vibe */}
           <motion.div
             style={{ opacity: swipeVibeOpacity }}
-            className="absolute top-4 right-4 border-[3.5px] border-emerald-600 text-emerald-600 font-black tracking-widest px-4 py-1.5 rounded-2xl -rotate-12 pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-base uppercase drop-shadow-md flex items-center gap-2"
+            className="absolute top-4 right-4 border-[3.5px] border-emerald-600 text-emerald-600 font-black tracking-widest px-4 py-1.5 rounded-2xl rotate-12 pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-base uppercase drop-shadow-md flex items-center gap-2"
           >
             TOTALLY MY VIBE
           </motion.div>
@@ -130,7 +131,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
           
           <motion.div
             style={{ opacity: swipeMaybeOpacity }}
-            className="absolute top-4 left-1/2 -translate-x-1/2 border-[3.5px] border-amber-600 text-amber-600 font-black tracking-widest px-4 py-1.5 rounded-2xl -rotate-12 pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-base uppercase drop-shadow-md flex items-center gap-2"
+            className="absolute top-4 left-1/2 -translate-x-1/2 border-[3.5px] border-amber-600 text-amber-600 font-black tracking-widest px-4 py-1.5 rounded-2xl -rotate-0 pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-base uppercase drop-shadow-md flex items-center gap-2"
           >
             <Bookmark className="w-5 h-5 fill-amber-600 stroke-[2.5]" />
             MAYBE LATER
