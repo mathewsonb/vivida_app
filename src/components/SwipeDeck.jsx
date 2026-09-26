@@ -21,20 +21,25 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
 
   // Calculate Match Score
   const calculateMatchScore = (eVector) => {
+    if (!eVector) return 50;
     const e = eVector.energy ?? eVector.energy_vector ?? 0.5;
     const s = eVector.social ?? eVector.social_vector ?? 0.5;
     const n = eVector.novelty ?? eVector.novelty_vector ?? 0.5;
 
-    const dE = mood.energy - e;
-    const dS = mood.social - s;
-    const dN = mood.novelty - n;
+    const moodEnergy = mood?.energy ?? 0.5;
+    const moodSocial = mood?.social ?? 0.5;
+    const moodNovelty = mood?.novelty ?? 0.5;
+
+    const dE = moodEnergy - e;
+    const dS = moodSocial - s;
+    const dN = moodNovelty - n;
     const distance = Math.sqrt(dE * dE + dS * dS + dN * dN);
     return Math.max(0, Math.min(100, Math.round((1 - distance / Math.sqrt(3)) * 100)));
   };
 
   const currentMatchScore = calculateMatchScore(activeEvent);
 
-  // Motion Values for 2D Gestures (X for left/right, Y for swipe up)
+  // Motion Values for Gestures
   const x = useMotionValue(0);
   const y = useMotionValue(0);
 
@@ -47,40 +52,122 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
     }
   );
 
-  // Swipe Visual Overlay Opacities - Immediate Pop-In
+  // Swipe Visual Overlay Opacities
   const swipeRejectOpacity = useTransform(x, [-60, -15], [1, 0]);
   const swipeVibeOpacity = useTransform(x, [15, 60], [0, 1]);
-  const swipeMaybeOpacity = useTransform(y, [-60, -15], [1, 0]); // Triggers on dragging upward
+  const swipeMaybeOpacity = useTransform(y, [-60, -15], [1, 0]);
 
   const handleDragEnd = (e, info) => {
     const offsetX = info.offset.x;
     const offsetY = info.offset.y;
 
-    // 1. Swipe Up (Maybe Later)
     if (offsetY < -100 && Math.abs(offsetY) > Math.abs(offsetX)) {
-      onSwipe('maybe_later', activeEvent);
-      // Reset motion values for the incoming card
+      onSwipe?.('maybe_later', activeEvent);
       x.set(0);
       y.set(0);
-    } 
-    // 2. Swipe Right (Totally My Vibe)
-    else if (offsetX > 100) {
-      onSwipe('totally_vibe', activeEvent);
+    } else if (offsetX > 100) {
+      onSwipe?.('totally_vibe', activeEvent);
       x.set(0);
       y.set(0);
-    } 
-    // 3. Swipe Left (Not My Scene)
-    else if (offsetX < -100) {
-      onSwipe('not_my_scene', activeEvent);
+    } else if (offsetX < -100) {
+      onSwipe?.('not_my_scene', activeEvent);
       x.set(0);
       y.set(0);
-    } 
-    // 4. Threshold NOT met -> Snap back smoothly to center
-    else {
+    } else {
       animate(x, 0, { type: 'spring', stiffness: 300, damping: 28 });
       animate(y, 0, { type: 'spring', stiffness: 300, damping: 28 });
     }
   };
+
+  /**
+   * FLEXIBLE SCHEDULE PARSER:
+   * Handles stringified JSON, arrays, single dicts, and date-keyed dicts cleanly.
+   */
+  const parsedSchedule = (() => {
+    let scheduleData = activeEvent?.schedule;
+
+    if (!scheduleData) return [];
+
+    if (typeof scheduleData === 'string') {
+      try {
+        scheduleData = JSON.parse(scheduleData);
+        // Step 1 Safety: Un-escape double-stringified output from Python json.dumps in TEXT columns
+        if (typeof scheduleData === 'string') {
+          scheduleData = JSON.parse(scheduleData);
+        }
+      } catch (err) {
+        console.warn('Failed to parse schedule JSON:', err);
+        return [];
+      }
+    }
+
+    const formatDates = (rawDateStr) => {
+      if (!rawDateStr) return 'Register';
+      const dateOptions = { month: 'short', day: 'numeric', year: 'numeric' };
+
+      // Step 2 Safety: Guard against non-string inputs
+      const strVal = String(rawDateStr);
+
+      // Helper function to safely parse dates in local timezone
+      const parseLocal = (dStr) => {
+        const trimmed = dStr.trim();
+        // If it's a simple YYYY-MM-DD, append T00:00:00 to force local time parsing
+        if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+          return new Date(`${trimmed}T00:00:00`);
+        }
+        return new Date(trimmed);
+      };
+
+      if (strVal.includes(',')) {
+        const dates = strVal
+          .split(',')
+          .map((d) => new Date(d.trim()))
+          .filter((d) => !isNaN(d.getTime()));
+
+        if (dates.length >= 2) {
+          const start = dates[0].toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          const end = dates[dates.length - 1].toLocaleDateString('en-US', dateOptions);
+          return `${start} - ${end}`;
+        } else if (dates.length === 1) {
+          return dates[0].toLocaleDateString('en-US', dateOptions);
+        }
+      }
+
+      const parsedDate = parseLocal(strVal);
+      if (!isNaN(parsedDate.getTime())) {
+        return parsedDate.toLocaleDateString('en-US', dateOptions);
+      }
+
+      return strVal;
+    };
+
+    // Case 1: Array of items
+    if (Array.isArray(scheduleData)) {
+      return scheduleData.map((item) => ({
+        label: formatDates(item.start_time || item.date || item.time),
+        registerUrl: item.register || item.url || item.external_url || activeEvent.external_url || '#',
+      }));
+    }
+
+    // Case 2 & 3: JSON Object
+    if (typeof scheduleData === 'object' && scheduleData !== null) {
+      // Direct {"start_time": "...", "register": "..."} format from raw dump
+      if ('start_time' in scheduleData || 'register' in scheduleData || 'external_url' in scheduleData) {
+        return [{
+          label: formatDates(scheduleData.start_time),
+          registerUrl: scheduleData.register || scheduleData.external_url || activeEvent.external_url || '#',
+        }];
+      }
+
+      // Date-keyed object: {"YYYY-MM-DD": "url"}
+      return Object.entries(scheduleData).map(([key, value]) => ({
+        label: formatDates(key),
+        registerUrl: typeof value === 'string' ? value : activeEvent.external_url || '#',
+      }));
+    }
+
+    return [];
+  })();
 
   const venue = activeEvent.venue_name || activeEvent.venue || 'Local Venue';
   const mapUrl = activeEvent.latitude && activeEvent.longitude 
@@ -88,10 +175,10 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
     : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(venue + ' ' + (activeEvent.address || 'Tacoma, WA'))}`;
 
   return (
-    <div className="relative w-full max-w-md mx-auto min-h-[450px] my-auto">
+    <div className="relative w-full max-w-md mx-auto min-h-[480px] my-auto">
       <AnimatePresence mode="wait">
         <motion.div
-          key={activeEvent.id}
+          key={activeEvent.id || activeEvent.title || 'active-card'}
           initial={{ scale: 0.95, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           exit={{ scale: 0.95, opacity: 0 }}
@@ -106,12 +193,9 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
           dragDirectionLock
           dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
           onDragEnd={handleDragEnd}
-          /* Removed 'transition-all duration-200' to prevent CSS vs. Framer animation conflicts */
-          className="relative w-full min-h-[420px] bg-white border border-parchment-200 rounded-3xl shadow-xl flex flex-col justify-between cursor-grab active:cursor-grabbing select-none overflow-hidden transform-gpu will-change-transform"
+          className="relative w-full min-h-[460px] max-h-[600px] bg-white border border-parchment-200 rounded-3xl shadow-xl flex flex-col justify-between cursor-grab active:cursor-grabbing select-none overflow-hidden transform-gpu will-change-transform"
         >
           {/* SWIPE OVERLAY INDICATORS */}
-          
-          {/* Right: Totally My Vibe */}
           <motion.div
             style={{ opacity: swipeVibeOpacity }}
             className="absolute top-4 right-4 border-[3.5px] border-emerald-600 text-emerald-600 font-black tracking-widest px-4 py-1.5 rounded-2xl rotate-12 pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-base uppercase drop-shadow-md flex items-center gap-2"
@@ -119,7 +203,6 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
             TOTALLY MY VIBE
           </motion.div>
 
-          {/* Left: Not My Scene */}
           <motion.div
             style={{ opacity: swipeRejectOpacity }}
             className="absolute top-4 left-4 border-[3.5px] border-rose-600 text-rose-600 font-black tracking-widest px-4 py-1.5 rounded-2xl -rotate-12 pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-base uppercase drop-shadow-md flex items-center gap-2"
@@ -127,7 +210,6 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
             NOT MY SCENE
           </motion.div>
 
-          {/* Up: Maybe Later */}
           <motion.div
             style={{ opacity: swipeMaybeOpacity }}
             className="absolute top-4 left-1/2 -translate-x-1/2 border-[3.5px] border-amber-600 text-amber-600 font-black tracking-widest px-4 py-1.5 rounded-2xl rotate-0 pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-base uppercase drop-shadow-md flex items-center gap-2"
@@ -137,13 +219,13 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
           </motion.div>
 
           {/* CARD BODY CONTENT */}
-          <div className="flex-1 flex flex-col justify-between">
+          <div className="flex-1 flex flex-col justify-between overflow-y-auto no-scrollbar">
             {/* TOP SECTION: IMAGE HEADER & BADGES */}
             <div>
-              <div className="relative h-44 w-full bg-parchment-100 overflow-hidden">
+              <div className="relative h-44 w-full bg-parchment-100 overflow-hidden shrink-0">
                 <img
                   src={activeEvent.image_url || FALLBACK_IMAGE}
-                  alt={activeEvent.title}
+                  alt={activeEvent.title || 'Event image'}
                   onError={(e) => {
                     e.target.onerror = null;
                     e.target.src = FALLBACK_IMAGE;
@@ -174,7 +256,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
               </div>
             </div>
 
-            {/* BOTTOM METADATA & ACTIONS */}
+            {/* BOTTOM METADATA & DYNAMIC SCHEDULE BUTTONS */}
             <div className="px-5 pb-5 space-y-3">
               <div className="space-y-1.5 border-t border-parchment-100 pt-3 text-xs text-parchment-800">
                 {mapUrl && (
@@ -182,6 +264,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
                     href={mapUrl}
                     target="_blank"
                     rel="noopener noreferrer"
+                    onPointerDown={(e) => e.stopPropagation()}
                     onClick={(e) => e.stopPropagation()}
                     className="flex items-center gap-2 text-terracotta font-medium hover:underline truncate"
                   >
@@ -189,27 +272,6 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
                     <span className="truncate">{venue} {activeEvent.address ? `• ${activeEvent.address}` : ''}</span>
                   </a>
                 )}
-
-                <div className="flex items-center gap-2">
-                  <Calendar className="w-4 h-4 text-terracotta shrink-0" />
-                  <span>
-                    {(() => {
-                      const options = { 
-                        weekday: 'short', 
-                        month: 'short', 
-                        day: 'numeric' 
-                      };
-
-                      const formattedDates = (activeEvent.start_time || '')
-                        .split(',')
-                        .map(s => new Date(s.trim()))
-                        .filter(d => !isNaN(d.getTime()))
-                        .map(d => d.toLocaleDateString('en-US', options));
-
-                      return formattedDates.join(' - ') || 'Date TBA';
-                    })()}
-                  </span>
-                </div>
 
                 {activeEvent.price_info && (
                   <div className="flex items-center gap-2 text-parchment-700">
@@ -219,19 +281,37 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
                 )}
               </div>
 
-              {/* TICKET REDIRECT */}
-              {activeEvent.external_url && (
-                <a
-                  href={activeEvent.external_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={(e) => e.stopPropagation()}
-                  className="w-full flex items-center justify-center gap-1.5 bg-terracotta hover:bg-terracotta-600 text-white font-semibold py-2 px-4 rounded-xl text-xs shadow-sm transition-colors mt-2"
+              {/* DYNAMIC REGISTRATION BUTTONS */}
+              <div className="mt-2 space-y-1.5">
+                <div className="flex items-center gap-1.5 text-[11px] font-medium text-parchment-700">
+                  <Calendar className="w-3.5 h-3.5 text-terracotta" />
+                  <span>Select Date to Register:</span>
+                </div>
+
+                <div 
+                  className="flex items-center gap-2 overflow-x-auto pb-1 pt-0.5 no-scrollbar"
+                  onPointerDown={(e) => e.stopPropagation()}
                 >
-                  <span>Get Tickets / View Event</span>
-                  <ExternalLink className="w-3.5 h-3.5" />
-                </a>
-              )}
+                  {parsedSchedule.length > 0 ? (
+                    parsedSchedule.map((item, idx) => (
+                      <a
+                        key={idx}
+                        href={item.registerUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={(e) => e.stopPropagation()}
+                        className="shrink-0 flex items-center gap-1.5 bg-parchment-100 hover:bg-terracotta hover:text-white text-parchment-900 border border-parchment-200 font-semibold py-1.5 px-3 rounded-xl text-xs shadow-sm transition-all"
+                      >
+                        <span>{item.label}</span>
+                        <ExternalLink className="w-3 h-3 opacity-70" />
+                      </a>
+                    ))
+                  ) : (
+                    <span className="text-xs text-parchment-700 italic">No scheduled dates available</span>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </motion.div>
