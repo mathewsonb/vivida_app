@@ -48,9 +48,9 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
   );
 
   // Swipe Visual Overlay Opacities - Immediate Pop-In
-  const swipeRejectOpacity = useTransform(x, [-20, -5], [1, 0]);
-  const swipeVibeOpacity = useTransform(x, [5, 20], [0, 1]);
-  const swipeMaybeOpacity = useTransform(y, [-20, -5], [1, 0]); // Triggers on dragging upward
+  const swipeRejectOpacity = useTransform(x, [-60, -15], [1, 0]);
+  const swipeVibeOpacity = useTransform(x, [15, 60], [0, 1]);
+  const swipeMaybeOpacity = useTransform(y, [-60, -15], [1, 0]); // Triggers on dragging upward
 
   const handleDragEnd = (e, info) => {
     const offsetX = info.offset.x;
@@ -89,27 +89,28 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
 
   return (
     <div className="relative w-full max-w-md mx-auto min-h-[450px] my-auto">
-      <AnimatePresence>
-          <motion.div
-            key={activeEvent.id}
-            initial={{ scale: 0.95, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0.95, opacity: 0 }}
-            transition={{
-              type: "spring",
-              stiffness: 300, // Lower stiffness reduces jerky physics calculations (default is ~400)
-              damping: 28,    // Prevents oscillation/bounciness at the end of the swipe
-              mass: 0.8,      // Lighter mass makes the card respond faster with less inertia
-              duration: 0.2
-            }}
-            style={{ x, y, rotate, opacity }}
-            drag
-            dragDirectionLock // Locks gesture to either X or Y axis based on initial movement direction
-            dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
-            onDragEnd={handleDragEnd}
-            className="relative w-full min-h-[420px] bg-white border border-parchment-200 rounded-3xl shadow-xl flex flex-col justify-between cursor-grab active:cursor-grabbing select-none overflow-hidden transition-all duration-200"
-          >
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={activeEvent.id}
+          initial={{ scale: 0.95, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          exit={{ scale: 0.95, opacity: 0 }}
+          transition={{
+            type: "spring",
+            stiffness: 300,
+            damping: 28,
+            mass: 0.8,
+          }}
+          style={{ x, y, rotate, opacity }}
+          drag
+          dragDirectionLock
+          dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
+          onDragEnd={handleDragEnd}
+          /* Removed 'transition-all duration-200' to prevent CSS vs. Framer animation conflicts */
+          className="relative w-full min-h-[420px] bg-white border border-parchment-200 rounded-3xl shadow-xl flex flex-col justify-between cursor-grab active:cursor-grabbing select-none overflow-hidden transform-gpu will-change-transform"
+        >
           {/* SWIPE OVERLAY INDICATORS */}
+          
           {/* Right: Totally My Vibe */}
           <motion.div
             style={{ opacity: swipeVibeOpacity }}
@@ -127,114 +128,111 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
           </motion.div>
 
           {/* Up: Maybe Later */}
-          {/* <motion.div
-            style={{ opacity: swipeMaybeOpacity }}
-            className="absolute top-6 left-1/2 -translate-x-1/2 border-2 border-amber-600 text-amber-600 font-bold px-4 py-1.5 rounded-xl pointer-events-none z-30 bg-white/90 backdrop-blur-sm shadow-md flex items-center gap-1.5"
-          >
-            <Bookmark className="w-4 h-4 fill-amber-600" />
-            MAYBE LATER
-          </motion.div> */}
-          
           <motion.div
             style={{ opacity: swipeMaybeOpacity }}
-            className="absolute top-4 left-1/2 -translate-x-1/2 border-[3.5px] border-amber-600 text-amber-600 font-black tracking-widest px-4 py-1.5 rounded-2xl -rotate-0 pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-base uppercase drop-shadow-md flex items-center gap-2"
+            className="absolute top-4 left-1/2 -translate-x-1/2 border-[3.5px] border-amber-600 text-amber-600 font-black tracking-widest px-4 py-1.5 rounded-2xl rotate-0 pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-base uppercase drop-shadow-md flex items-center gap-2"
           >
             <Bookmark className="w-5 h-5 fill-amber-600 stroke-[2.5]" />
             MAYBE LATER
           </motion.div>
 
-          {/* TOP SECTION: IMAGE HEADER & BADGES */}
-          <div>
-            <div className="relative h-44 w-full bg-parchment-100 overflow-hidden">
-              <img
-                src={activeEvent.image_url || FALLBACK_IMAGE}
-                alt={activeEvent.title}
-                onError={(e) => {
-                  e.target.onerror = null;
-                  e.target.src = FALLBACK_IMAGE;
-                }}
-                className="w-full h-full object-cover"
-              />
-              <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20" />
+          {/* CARD BODY CONTENT */}
+          <div className="flex-1 flex flex-col justify-between">
+            {/* TOP SECTION: IMAGE HEADER & BADGES */}
+            <div>
+              <div className="relative h-44 w-full bg-parchment-100 overflow-hidden">
+                <img
+                  src={activeEvent.image_url || FALLBACK_IMAGE}
+                  alt={activeEvent.title}
+                  onError={(e) => {
+                    e.target.onerror = null;
+                    e.target.src = FALLBACK_IMAGE;
+                  }}
+                  className="w-full h-full object-cover"
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20" />
 
-              <div className="absolute top-4 left-4 right-4 flex justify-between items-center z-10">
-                <span className="text-[11px] font-semibold uppercase tracking-wider bg-black/50 backdrop-blur-md text-white px-2.5 py-1 rounded-full border border-white/20">
-                  {activeEvent.category || 'Local Experience'}
-                </span>
-                <div className="flex items-center gap-1 bg-terracotta text-white px-2.5 py-1 rounded-full text-xs font-bold shadow-md">
-                  <Flame className="w-3.5 h-3.5 fill-white" />
-                  {currentMatchScore}% Match
+                <div className="absolute top-4 left-4 right-4 flex justify-between items-center z-10">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider bg-black/50 backdrop-blur-md text-white px-2.5 py-1 rounded-full border border-white/20">
+                    {activeEvent.category || 'Local Experience'}
+                  </span>
+                  <div className="flex items-center gap-1 bg-terracotta text-white px-2.5 py-1 rounded-full text-xs font-bold shadow-md">
+                    <Flame className="w-3.5 h-3.5 fill-white" />
+                    {currentMatchScore}% Match
+                  </div>
                 </div>
+              </div>
+
+              {/* EVENT DETAILS */}
+              <div className="p-5 sm:p-6 space-y-2">
+                <h2 className="font-serif text-xl font-bold text-parchment-900 leading-tight">
+                  {activeEvent.title}
+                </h2>
+                <p className="text-xs text-parchment-800/80 leading-relaxed line-clamp-4">
+                  {activeEvent.description}
+                </p>
               </div>
             </div>
 
-            {/* EVENT DETAILS */}
-            <div className="p-5 sm:p-6 flex-1 flex flex-col justify-between space-y-4">
-              <h2 className="font-serif text-xl font-bold text-parchment-900 leading-tight mb-2">
-                {activeEvent.title}
-              </h2>
-              <p className="text-xs text-parchment-800/80 line-clamp-3 leading-relaxed mb-3">
-                {activeEvent.description}
-              </p>
-            </div>
-          </div>
+            {/* BOTTOM METADATA & ACTIONS */}
+            <div className="px-5 pb-5 space-y-3">
+              <div className="space-y-1.5 border-t border-parchment-100 pt-3 text-xs text-parchment-800">
+                {mapUrl && (
+                  <a 
+                    href={mapUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="flex items-center gap-2 text-terracotta font-medium hover:underline truncate"
+                  >
+                    <MapPin className="w-4 h-4 shrink-0 text-terracotta" />
+                    <span className="truncate">{venue} {activeEvent.address ? `• ${activeEvent.address}` : ''}</span>
+                  </a>
+                )}
 
-          {/* BOTTOM METADATA & ACTIONS */}
-          <div className="px-5 pb-5 space-y-3">
-            <div className="space-y-1.5 border-t border-parchment-100 pt-3 text-xs text-parchment-800">
-              <a 
-                href={mapUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={(e) => e.stopPropagation()}
-                className="flex items-center gap-2 text-terracotta font-medium hover:underline truncate"
-              >
-                <MapPin className="w-4 h-4 shrink-0 text-terracotta" />
-                <span className="truncate">{venue} {activeEvent.address ? `• ${activeEvent.address}` : ''}</span>
-              </a>
+                <div className="flex items-center gap-2">
+                  <Calendar className="w-4 h-4 text-terracotta shrink-0" />
+                  <span>
+                    {(() => {
+                      const options = { 
+                        weekday: 'short', 
+                        month: 'short', 
+                        day: 'numeric' 
+                      };
 
-              <div className="flex items-center gap-2">
-                <Calendar className="w-4 h-4 text-terracotta shrink-0" />
-                <span>
-                  {(() => {
-                    const options = { 
-                      weekday: 'short', 
-                      month: 'short', 
-                      day: 'numeric' 
-                    };
+                      const formattedDates = (activeEvent.start_time || '')
+                        .split(',')
+                        .map(s => new Date(s.trim()))
+                        .filter(d => !isNaN(d.getTime()))
+                        .map(d => d.toLocaleDateString('en-US', options));
 
-                    const formattedDates = (activeEvent.start_time || '')
-                      .split(',')
-                      .map(s => new Date(s.trim()))
-                      .filter(d => !isNaN(d.getTime()))
-                      .map(d => d.toLocaleDateString('en-US', options));
+                      return formattedDates.join(' - ') || 'Date TBA';
+                    })()}
+                  </span>
+                </div>
 
-                    return formattedDates.join(' - ');
-                  })()}
-                </span>
+                {activeEvent.price_info && (
+                  <div className="flex items-center gap-2 text-parchment-700">
+                    <Tag className="w-4 h-4 text-terracotta shrink-0" />
+                    <span>{activeEvent.price_info}</span>
+                  </div>
+                )}
               </div>
 
-              {activeEvent.price_info && (
-                <div className="flex items-center gap-2 text-parchment-700">
-                  <Tag className="w-4 h-4 text-terracotta shrink-0" />
-                  <span>{activeEvent.price_info}</span>
-                </div>
+              {/* TICKET REDIRECT */}
+              {activeEvent.external_url && (
+                <a
+                  href={activeEvent.external_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="w-full flex items-center justify-center gap-1.5 bg-terracotta hover:bg-terracotta-600 text-white font-semibold py-2 px-4 rounded-xl text-xs shadow-sm transition-colors mt-2"
+                >
+                  <span>Get Tickets / View Event</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
               )}
             </div>
-
-            {/* TICKET REDIRECT */}
-            {activeEvent.external_url && (
-              <a
-                href={activeEvent.external_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={(e) => e.stopPropagation()}
-                className="w-full flex items-center justify-center gap-1.5 bg-terracotta hover:bg-terracotta-600 text-white font-semibold py-2 px-4 rounded-xl text-xs shadow-sm transition-colors mt-2"
-              >
-                <span>Get Tickets / View Event</span>
-                <ExternalLink className="w-3.5 h-3.5" />
-              </a>
-            )}
           </div>
         </motion.div>
       </AnimatePresence>
