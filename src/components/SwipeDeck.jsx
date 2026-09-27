@@ -233,7 +233,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
           transition={{ type: "spring", stiffness: 300, damping: 25 }}
           style={{ x, y, rotate }}
           drag
-          dragDirectionLock={false}
+          dragDirectionLock
           dragSnapToOrigin
           dragElastic={0.6}
           onDragEnd={handleDragEnd}
