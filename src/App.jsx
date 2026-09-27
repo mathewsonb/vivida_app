@@ -5,7 +5,6 @@ import SwipeDeck from './components/SwipeDeck';
 import HistoryModal from './components/HistoryModal';
 import EmailPromptModal from './components/EmailPromptModal';
 import { ThumbsDown, Heart, Flame, Sparkles } from 'lucide-react';
-import { trackEventInteraction } from './lib/tracking';
 
 export default function App() {
   const [rawEvents, setRawEvents] = useState([]);
@@ -13,11 +12,9 @@ export default function App() {
   const [sessionKey, setSessionKey] = useState('');
   const [userHash, setUserHash] = useState(null);
 
-  // Modals state
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isInitialPromptOpen, setIsInitialPromptOpen] = useState(false);
   
-  // Local Bookmarks state with persistence
   const [bookmarks, setBookmarks] = useState(() => {
     try {
       const saved = localStorage.getItem('vivida_bookmarks');
@@ -27,14 +24,12 @@ export default function App() {
     }
   });
 
-  // Triaxial Mood Vector State
   const [mood, setMood] = useState({
     energy: 0.5,
     social: 0.5,
     novelty: 0.5,
   });
 
-  // Persist Bookmarks updates to localStorage
   useEffect(() => {
     try {
       localStorage.setItem('vivida_bookmarks', JSON.stringify(bookmarks));
@@ -43,7 +38,6 @@ export default function App() {
     }
   }, [bookmarks]);
 
-  // Initialize Session Key, User Hash, and Initial Prompt on Mount
   useEffect(() => {
     let activeKey = localStorage.getItem('vivida_session_key');
     if (!activeKey) {
@@ -127,7 +121,6 @@ export default function App() {
     }
   };
 
-  // Distance Sorting via Euclidean Triaxial Mood Vectors
   const rankedEvents = useMemo(() => {
     if (!rawEvents || rawEvents.length === 0) return [];
 
@@ -147,7 +140,6 @@ export default function App() {
     });
   }, [rawEvents, mood]);
 
-  // Handle User Swipes and Log Interactions to Supabase
   const handleInteraction = useCallback(async (type, event) => {
     if (!event) return;
 
@@ -168,16 +160,10 @@ export default function App() {
       target_energy: mood.energy,
       target_social: mood.social,
       target_novelty: mood.novelty,
-    }; // legacy from prior call to Supabase in lines below
+    };
 
     try {
-      const { data, error } = await trackEventInteraction(userHash, event.id, interactionType);
-
-      if (error) {
-        console.error('Supabase Insert Error:', error.message, error.details, error.hint);
-      } else {
-        console.log('Successfully inserted conversion record:', data);
-      }
+      await supabase.from('event_conversions').insert(payload);
     } catch (err) {
       console.error('Unexpected error recording interaction:', err);
     }
@@ -186,8 +172,8 @@ export default function App() {
   const activeTopEvent = rankedEvents[0];
 
   return (
-    <div className="min-h-screen bg-parchment-50 text-parchment-900 flex flex-col font-sans">
-      {/* Header with Connected Props */}
+    <div className="h-dvh w-full bg-parchment-50 text-parchment-900 flex flex-col justify-between overflow-hidden pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
+      {/* Header */}
       <Header 
         mood={mood}
         onChangeMood={setMood}
@@ -197,10 +183,11 @@ export default function App() {
         hasUserHash={!!userHash}
       />
 
-      <main className="flex-1 max-w-md w-full mx-auto px-4 py-2 flex flex-col justify-between">
-        <div className="my-auto">
+      {/* Main Container */}
+      <main className="flex-1 w-full max-w-md mx-auto px-4 flex flex-col justify-between overflow-hidden py-2">
+        <div className="flex-1 flex flex-col justify-center items-center overflow-hidden">
           {loading ? (
-            <div className="h-[440px] flex flex-col items-center justify-center text-parchment-800/60">
+            <div className="flex flex-col items-center justify-center text-parchment-800/60">
               <Sparkles className="w-8 h-8 animate-spin text-terracotta mb-2" />
               <span className="text-xs font-medium">Fetching hyper-local pulse...</span>
             </div>
@@ -213,21 +200,20 @@ export default function App() {
           )}
         </div>
 
+        {/* Action Bar */}
         {!loading && activeTopEvent && (
-          <div className="flex items-center justify-center gap-4 my-4">
+          <div className="flex items-center justify-center gap-6 py-2 shrink-0">
             <button
               onClick={() => handleInteraction('not_my_scene', activeTopEvent)}
-              className="w-14 h-14 rounded-full bg-white border border-parchment-200 shadow-md flex items-center justify-center text-rose-600 hover:bg-rose-50 transition-colors active:scale-95"
-              title="Not My Scene"
+              className="w-16 h-16 rounded-full bg-white border border-parchment-200 shadow-lg flex items-center justify-center text-rose-600 hover:bg-rose-50 active:scale-90 transition-transform"
               aria-label="Not My Scene"
             >
-              <ThumbsDown className="w-6 h-6" />
+              <ThumbsDown className="w-7 h-7" />
             </button>
 
             <button
               onClick={() => handleInteraction('maybe_later', activeTopEvent)}
-              className="w-12 h-12 rounded-full bg-white border border-parchment-200 shadow-md flex items-center justify-center text-amber-600 hover:bg-amber-50 transition-colors active:scale-95"
-              title="Maybe Later"
+              className="w-12 h-12 rounded-full bg-white border border-parchment-200 shadow-md flex items-center justify-center text-amber-600 hover:bg-amber-50 active:scale-90 transition-transform"
               aria-label="Maybe Later"
             >
               <Heart className="w-5 h-5" />
@@ -235,16 +221,16 @@ export default function App() {
 
             <button
               onClick={() => handleInteraction('totally_vibe', activeTopEvent)}
-              className="w-14 h-14 rounded-full bg-terracotta text-white shadow-lg flex items-center justify-center hover:bg-terracotta-hover transition-colors active:scale-95"
-              title="Totally My Vibe"
+              className="w-16 h-16 rounded-full bg-terracotta text-white shadow-xl flex items-center justify-center hover:bg-terracotta-hover active:scale-90 transition-transform"
               aria-label="Totally My Vibe"
             >
-              <Flame className="w-6 h-6 fill-white" />
+              <Flame className="w-7 h-7 fill-white" />
             </button>
           </div>
         )}
       </main>
 
+      {/* Modals */}
       {isInitialPromptOpen && (
         <EmailPromptModal
           isOpen={isInitialPromptOpen}

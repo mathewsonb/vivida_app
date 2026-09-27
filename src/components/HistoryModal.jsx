@@ -105,11 +105,11 @@ export default function HistoryModal({
 
   return (
     <div 
-      className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4 touch-auto"
+      className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 touch-none"
       onClick={onClose}
     >
       <div 
-        className="bg-parchment-100 rounded-3xl p-6 max-w-lg w-full border border-parchment-300 shadow-2xl relative max-h-[90vh] flex flex-col"
+        className="bg-parchment-100 rounded-t-3xl sm:rounded-3xl p-6 max-w-lg w-full border border-parchment-300 shadow-2xl relative max-h-[85dvh] flex flex-col touch-auto"
         onClick={(e) => e.stopPropagation()} // Prevent clicking inside modal from closing it
       >
         <button
