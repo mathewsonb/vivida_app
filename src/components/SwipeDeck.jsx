@@ -45,14 +45,19 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
 
   const rotate = useTransform(x, [-200, 200], [-12, 12]);
   
-  // Dynamic opacity curves for swipe overlays
-  const swipeRejectOpacity = useTransform(x, [-80, -20], [1, 0]);
-  const swipeVibeOpacity = useTransform(x, [20, 80], [0, 1]);
-  const swipeMaybeOpacity = useTransform(y, [-80, -20], [1, 0]);
-  
-  // Position transforms: Move badges from bottom edge (-0px) up to top rim (-420px) during drag
+  // 1. Opacity: Fade in smoothly as drag begins and stay visible at full drag
+  const swipeRejectOpacity = useTransform(x, [-120, -20], [1, 0]);
+  const swipeVibeOpacity = useTransform(x, [20, 120], [0, 1]);
+  const swipeMaybeOpacity = useTransform(y, [-120, -20], [1, 0]);
+
+  // 2. Vertical Position: Move badges from bottom edge (0px) up to top rim (-420px)
   const horizontalLabelY = useTransform(x, [-150, 0, 150], [-420, 0, -420]);
   const verticalLabelY = useTransform(y, [-150, 0], [-420, 0]);
+
+  // 3. Blur -> Bold Effect: High blur + lower opacity at bottom, crisp at top
+  const rejectBlur = useTransform(x, [-150, 0], ["blur(0px)", "blur(8px)"]);
+  const vibeBlur = useTransform(x, [0, 150], ["blur(8px)", "blur(0px)"]);
+  const maybeBlur = useTransform(y, [-150, 0], ["blur(0px)", "blur(8px)"]);
 
   // Dynamic vertical translation for overlays so they move up and out of frame uniformly
   const overlayYOffset = useTransform([x, y], ([latestX, latestY]) => {
@@ -183,22 +188,36 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
     <div className="relative w-full max-w-md mx-auto my-auto pt-8">
       {/* FIXED UNIFORM HOVERING BADGES (OUTSIDE THE ROTATING CARD FRAME) */}
       <motion.div 
-        style={{ y: horizontalLabelY, opacity: swipeVibeOpacity }}
-        className="absolute bottom-6 right-6 border-[3px] border-emerald-600 text-emerald-600 font-black tracking-widest px-4 py-1.5 rounded-2xl pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-xs uppercase flex items-center gap-2"
+        style={{ 
+          y: horizontalLabelY, 
+          opacity: swipeVibeOpacity,
+          filter: vibeBlur 
+        }}
+        className="absolute bottom-6 right-6 border-[3px] border-emerald-600 text-emerald-600 font-black tracking-widest px-4 py-1.5 rounded-2xl pointer-events-none z-30 bg-white/90 shadow-2xl text-xs uppercase flex items-center gap-2 transition-shadow"
       >
         TOTALLY MY VIBE
       </motion.div>
 
+      {/* REJECT BADGE */}
       <motion.div 
-        style={{ y: horizontalLabelY, opacity: swipeRejectOpacity }}
-        className="absolute bottom-6 left-6 border-[3px] border-rose-600 text-rose-600 font-black tracking-widest px-4 py-1.5 rounded-2xl pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-xs uppercase flex items-center gap-2"
+        style={{ 
+          y: horizontalLabelY, 
+          opacity: swipeRejectOpacity,
+          filter: rejectBlur 
+        }}
+        className="absolute bottom-6 left-6 border-[3px] border-rose-600 text-rose-600 font-black tracking-widest px-4 py-1.5 rounded-2xl pointer-events-none z-30 bg-white/90 shadow-2xl text-xs uppercase flex items-center gap-2 transition-shadow"
       >
         NOT MY SCENE
       </motion.div>
 
+      {/* MAYBE LATER BADGE */}
       <motion.div 
-        style={{ y: verticalLabelY, opacity: swipeMaybeOpacity }}
-        className="absolute bottom-6 left-1/2 -translate-x-1/2 border-[3px] border-amber-600 text-amber-600 font-black tracking-widest px-4 py-1.5 rounded-2xl pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-xs uppercase flex items-center gap-2 whitespace-nowrap"
+        style={{ 
+          y: verticalLabelY, 
+          opacity: swipeMaybeOpacity,
+          filter: maybeBlur 
+        }}
+        className="absolute bottom-6 left-1/2 -translate-x-1/2 border-[3px] border-amber-600 text-amber-600 font-black tracking-widest px-4 py-1.5 rounded-2xl pointer-events-none z-30 bg-white/90 shadow-2xl text-xs uppercase flex items-center gap-2 whitespace-nowrap transition-shadow"
       >
         <Bookmark className="w-4 h-4 fill-amber-600 stroke-[2.5]" />
         MAYBE LATER
@@ -214,6 +233,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
           transition={{ type: "spring", stiffness: 300, damping: 25 }}
           style={{ x, y, rotate }}
           drag
+          dragDirectionLock={false}
           dragSnapToOrigin
           dragElastic={0.6}
           onDragEnd={handleDragEnd}
