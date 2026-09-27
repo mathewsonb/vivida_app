@@ -49,6 +49,10 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
   const swipeRejectOpacity = useTransform(x, [-80, -20], [1, 0]);
   const swipeVibeOpacity = useTransform(x, [20, 80], [0, 1]);
   const swipeMaybeOpacity = useTransform(y, [-80, -20], [1, 0]);
+  
+  // Position transforms: Move badges from bottom edge (-0px) up to top rim (-420px) during drag
+  const horizontalLabelY = useTransform(x, [-150, 0, 150], [-420, 0, -420]);
+  const verticalLabelY = useTransform(y, [-150, 0], [-420, 0]);
 
   // Dynamic vertical translation for overlays so they move up and out of frame uniformly
   const overlayYOffset = useTransform([x, y], ([latestX, latestY]) => {
@@ -179,22 +183,22 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
     <div className="relative w-full max-w-md mx-auto my-auto pt-8">
       {/* FIXED UNIFORM HOVERING BADGES (OUTSIDE THE ROTATING CARD FRAME) */}
       <motion.div 
-        style={{ y: overlayYOffset, opacity: swipeVibeOpacity }}
-        className="absolute -top-3 right-4 border-[3px] border-emerald-600 text-emerald-600 font-black tracking-widest px-4 py-1.5 rounded-2xl pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-xs uppercase flex items-center gap-2"
+        style={{ y: horizontalLabelY, opacity: swipeVibeOpacity }}
+        className="absolute bottom-6 right-6 border-[3px] border-emerald-600 text-emerald-600 font-black tracking-widest px-4 py-1.5 rounded-2xl pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-xs uppercase flex items-center gap-2"
       >
         TOTALLY MY VIBE
       </motion.div>
 
       <motion.div 
-        style={{ y: overlayYOffset, opacity: swipeRejectOpacity }}
-        className="absolute -top-3 left-4 border-[3px] border-rose-600 text-rose-600 font-black tracking-widest px-4 py-1.5 rounded-2xl pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-xs uppercase flex items-center gap-2"
+        style={{ y: horizontalLabelY, opacity: swipeRejectOpacity }}
+        className="absolute bottom-6 left-6 border-[3px] border-rose-600 text-rose-600 font-black tracking-widest px-4 py-1.5 rounded-2xl pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-xs uppercase flex items-center gap-2"
       >
         NOT MY SCENE
       </motion.div>
 
       <motion.div 
-        style={{ y: overlayYOffset, opacity: swipeMaybeOpacity }}
-        className="absolute -top-3 left-1/2 -translate-x-1/2 border-[3px] border-amber-600 text-amber-600 font-black tracking-widest px-4 py-1.5 rounded-2xl pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-xs uppercase flex items-center gap-2 whitespace-nowrap"
+        style={{ y: verticalLabelY, opacity: swipeMaybeOpacity }}
+        className="absolute bottom-6 left-1/2 -translate-x-1/2 border-[3px] border-amber-600 text-amber-600 font-black tracking-widest px-4 py-1.5 rounded-2xl pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-xs uppercase flex items-center gap-2 whitespace-nowrap"
       >
         <Bookmark className="w-4 h-4 fill-amber-600 stroke-[2.5]" />
         MAYBE LATER
