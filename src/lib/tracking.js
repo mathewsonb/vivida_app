@@ -1,19 +1,29 @@
 // src/lib/tracking.js
-import { supabase } from './supabase';
+import { supabase } from './supabaseClient';
 
 /**
- * Logs an event interaction into Supabase with optional zero-PII user hash
+ * Tracks user interactions with events in Supabase.
+ * @param {string} userHash - SHA-256 hash of the user's email/identifier
+ * @param {string|number} eventId - ID of the event interacted with
+ * @param {'not_my_scene' | 'maybe_later' | 'totally_vibe'} interactionType - Interaction outcome
  */
-export async function trackEventInteraction(eventId, interactionType = 'vibe') {
-  const userHash = localStorage.getItem('vivida_user_hash') || null;
+export async function trackEventInteraction(userHash, eventId, interactionType) {
+  if (!userHash) return;
 
   try {
-    await supabase.from('event_conversions').insert({
-      event_id: eventId,
-      interaction_type: interactionType, // 'vibe', 'save', or 'vendor_click'
-      user_hash: userHash
-    });
+    const { error } = await supabase
+      .from('event_conversions')
+      .insert({
+        user_hash: userHash,
+        event_id: eventId,
+        interaction_type: interactionType,
+        created_at: new Date().toISOString()
+      });
+
+    if (error) {
+      console.error('Error recording interaction:', error.message);
+    }
   } catch (err) {
-    console.error('Failed to log event conversion:', err);
+    console.error('Failed to log interaction:', err);
   }
 }

@@ -5,6 +5,7 @@ import SwipeDeck from './components/SwipeDeck';
 import HistoryModal from './components/HistoryModal';
 import EmailPromptModal from './components/EmailPromptModal';
 import { ThumbsDown, Heart, Flame, Sparkles } from 'lucide-react';
+import { trackEventInteraction } from './lib/tracking';
 
 export default function App() {
   const [rawEvents, setRawEvents] = useState([]);
@@ -167,13 +168,10 @@ export default function App() {
       target_energy: mood.energy,
       target_social: mood.social,
       target_novelty: mood.novelty,
-    };
+    }; // legacy from prior call to Supabase in lines below
 
     try {
-      const { data, error } = await supabase
-        .from('event_conversions')
-        .insert(payload)
-        .select();
+      const { data, error } = await trackEventInteraction(userHash, event.id, interactionType);
 
       if (error) {
         console.error('Supabase Insert Error:', error.message, error.details, error.hint);
