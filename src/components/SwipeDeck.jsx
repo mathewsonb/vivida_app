@@ -92,7 +92,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
     const offsetX = info.offset.x;
     const offsetY = info.offset.y;
 
-    if (offsetY < -80 && Math.abs(offsetY) > Math.abs(offsetX)) {
+    if (offsetY < -50 && Math.abs(offsetY) > Math.abs(offsetX) * 0.6) {
       triggerSwipe('maybe_later');
     } else if (offsetX > 80) {
       triggerSwipe('totally_vibe');
@@ -240,7 +240,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
           className="relative w-full h-[480px] sm:h-[520px] bg-white border border-parchment-200 rounded-3xl shadow-xl flex flex-col justify-between cursor-grab active:cursor-grabbing select-none overflow-hidden touch-pan-y transform-gpu"
         >
           {/* CARD CONTENT */}
-          <div className="flex-1 flex flex-col justify-between overflow-y-auto touch-pan-y no-scrollbar">
+          <div className="flex-1 flex flex-col justify-between overflow-hidden pointer-events-none">
             <div>
               <div className="relative h-44 sm:h-48 w-full bg-parchment-100 overflow-hidden shrink-0">
                 <img
@@ -284,7 +284,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
                     rel="noopener noreferrer"
                     onPointerDown={(e) => e.stopPropagation()}
                     onClick={(e) => e.stopPropagation()}
-                    className="flex items-center gap-2 text-terracotta font-medium hover:underline truncate"
+                    className="pointer-events-auto flex items-center gap-2 text-terracotta font-medium hover:underline truncate"
                   >
                     <MapPin className="w-4 h-4 shrink-0 text-terracotta" />
                     <span className="truncate">{venue} {activeEvent.address ? `• ${activeEvent.address}` : ''}</span>
@@ -306,7 +306,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
                 </div>
 
                 <div 
-                  className="flex items-center gap-2 overflow-x-auto pb-1 pt-0.5 no-scrollbar touch-pan-x"
+                  className="pointer-events-auto flex items-center gap-2 overflow-x-auto pb-1 pt-0.5 no-scrollbar touch-pan-x"
                   onPointerDown={(e) => e.stopPropagation()}
                 >
                   {parsedSchedule.length > 0 ? (
