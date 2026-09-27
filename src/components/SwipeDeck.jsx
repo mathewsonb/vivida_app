@@ -1,3 +1,5 @@
+// src/components/SwipeDeck.jsx
+
 import React from 'react';
 import { Calendar, MapPin, Sparkles, Flame, ExternalLink, Tag, Bookmark } from 'lucide-react';
 import { motion, useMotionValue, useTransform, AnimatePresence, animate } from 'framer-motion';
@@ -121,7 +123,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
       if (strVal.includes(',')) {
         const dates = strVal
           .split(',')
-          .map((d) => new Date(d.trim()))
+          .map((d) => parseLocal(d))
           .filter((d) => !isNaN(d.getTime()));
 
         if (dates.length >= 2) {
