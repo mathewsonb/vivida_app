@@ -143,8 +143,10 @@ export default function App() {
   const handleInteraction = useCallback(async (type, event) => {
     if (!event) return;
 
+    // Remove event from current deck view
     setRawEvents((prev) => prev.filter((e) => e.id !== event.id));
 
+    // Update bookmarks count for positive interactions
     if (type === 'interested' || type === 'totally_vibe' || type === 'maybe_later') {
       setBookmarks((prev) => {
         if (prev.some((b) => b.id === event.id)) return prev;
@@ -171,15 +173,14 @@ export default function App() {
 
   const activeTopEvent = rankedEvents[0];
 
-  // RENDER HISTORY PAGE VIEW WHEN ACTIVE
+  // Full page History view
   if (currentView === 'history') {
     return <HistoryPage onBack={() => setCurrentView('deck')} />;
   }
 
-  // RENDER SWIPE DECK VIEW
   return (
     <div className="h-dvh w-full bg-parchment-50 text-parchment-900 flex flex-col justify-between overflow-hidden pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
-      {/* Header */}
+      {/* Header - Unified History Route */}
       <Header 
         mood={mood}
         onChangeMood={setMood}
@@ -236,7 +237,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Modals */}
+      {/* Email Prompt Modal */}
       {isInitialPromptOpen && (
         <EmailPromptModal
           isOpen={isInitialPromptOpen}

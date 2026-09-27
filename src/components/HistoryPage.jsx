@@ -161,11 +161,11 @@ export default function HistoryPage({ onBack }) {
   };
 
   return (
-    <div className="min-h-screen bg-parchment-50 text-parchment-900 pb-12 px-4 sm:px-6">
-      <div className="max-w-3xl mx-auto pt-6 space-y-6">
-        
-        {/* HEADER BAR */}
-        <div className="flex items-center justify-between border-b border-parchment-200 pb-4">
+    <div className="h-dvh w-full bg-parchment-50 text-parchment-900 flex flex-col overflow-hidden pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
+      
+      {/* FIXED HEADER BAR */}
+      <header className="shrink-0 px-4 pt-4 pb-3 border-b border-parchment-200 bg-parchment-50">
+        <div className="max-w-3xl mx-auto flex items-center justify-between">
           <button 
             onClick={onBack}
             className="flex items-center gap-2 text-sm font-semibold text-parchment-700 hover:text-terracotta transition-colors"
@@ -173,214 +173,221 @@ export default function HistoryPage({ onBack }) {
             <ArrowLeft className="w-4 h-4" />
             <span>Back to Deck</span>
           </button>
-          <h1 className="font-serif text-xl font-bold text-parchment-900">Your Selection History</h1>
+          <h1 className="font-serif text-lg sm:text-xl font-bold text-parchment-900">Your Selection History</h1>
+          <div className="w-12 sm:w-20" /> {/* Spacer */}
         </div>
+      </header>
 
-        {/* TAB FILTER CONTROL */}
-        <div className="flex items-center justify-between gap-2 bg-parchment-100 p-1.5 rounded-2xl border border-parchment-200">
-          <button
-            onClick={() => { setActiveTab('totally_vibe'); setSelectedIds([]); }}
-            className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-bold transition-all ${
-              activeTab === 'totally_vibe' 
-                ? 'bg-emerald-600 text-white shadow-md' 
-                : 'text-parchment-700 hover:bg-parchment-200/60'
-            }`}
-          >
-            <Flame className="w-3.5 h-3.5" />
-            <span>Vibes</span>
-          </button>
-
-          <button
-            onClick={() => { setActiveTab('maybe_later'); setSelectedIds([]); }}
-            className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-bold transition-all ${
-              activeTab === 'maybe_later' 
-                ? 'bg-amber-600 text-white shadow-md' 
-                : 'text-parchment-700 hover:bg-parchment-200/60'
-            }`}
-          >
-            <Bookmark className="w-3.5 h-3.5 fill-current" />
-            <span>Saved</span>
-          </button>
-
-          <button
-            onClick={() => { setActiveTab('not_my_scene'); setSelectedIds([]); }}
-            className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-bold transition-all ${
-              activeTab === 'not_my_scene' 
-                ? 'bg-rose-600 text-white shadow-md' 
-                : 'text-parchment-700 hover:bg-parchment-200/60'
-            }`}
-          >
-            <XCircle className="w-3.5 h-3.5" />
-            <span>Passed</span>
-          </button>
-        </div>
-
-        {/* BATCH ACTION CONTROLS */}
-        {filteredItems.length > 0 && (
-          <div className="flex items-center justify-between bg-white px-4 py-2.5 rounded-2xl border border-parchment-200 shadow-sm text-xs font-medium text-parchment-800">
-            <button 
-              onClick={selectAll}
-              className="flex items-center gap-2 hover:text-terracotta transition-colors"
+      {/* SCROLLABLE MAIN BODY */}
+      <main className="flex-1 overflow-y-auto min-h-0 px-4 sm:px-6 py-4">
+        <div className="max-w-3xl mx-auto space-y-4 pb-8">
+          
+          {/* TAB FILTER CONTROL */}
+          <div className="flex items-center justify-between gap-2 bg-parchment-100 p-1.5 rounded-2xl border border-parchment-200">
+            <button
+              onClick={() => { setActiveTab('totally_vibe'); setSelectedIds([]); }}
+              className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-bold transition-all ${
+                activeTab === 'totally_vibe' 
+                  ? 'bg-emerald-600 text-white shadow-md' 
+                  : 'text-parchment-700 hover:bg-parchment-200/60'
+              }`}
             >
-              {selectedIds.length === filteredItems.length && filteredItems.length > 0 ? (
-                <CheckSquare className="w-4 h-4 text-terracotta" />
-              ) : (
-                <Square className="w-4 h-4 text-parchment-400" />
-              )}
-              <span>Select All ({filteredItems.length})</span>
+              <Flame className="w-3.5 h-3.5" />
+              <span>Vibes</span>
             </button>
 
-            {selectedIds.length > 0 && (
-              <button
-                onClick={() => handleShare()}
-                className="flex items-center gap-1.5 bg-terracotta text-white px-3 py-1.5 rounded-xl font-bold hover:bg-terracotta/90 transition-all shadow-sm"
+            <button
+              onClick={() => { setActiveTab('maybe_later'); setSelectedIds([]); }}
+              className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-bold transition-all ${
+                activeTab === 'maybe_later' 
+                  ? 'bg-amber-600 text-white shadow-md' 
+                  : 'text-parchment-700 hover:bg-parchment-200/60'
+              }`}
+            >
+              <Bookmark className="w-3.5 h-3.5 fill-current" />
+              <span>Saved</span>
+            </button>
+
+            <button
+              onClick={() => { setActiveTab('not_my_scene'); setSelectedIds([]); }}
+              className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-bold transition-all ${
+                activeTab === 'not_my_scene' 
+                  ? 'bg-rose-600 text-white shadow-md' 
+                  : 'text-parchment-700 hover:bg-parchment-200/60'
+              }`}
+            >
+              <XCircle className="w-3.5 h-3.5" />
+              <span>Passed</span>
+            </button>
+          </div>
+
+          {/* BATCH ACTION CONTROLS */}
+          {filteredItems.length > 0 && (
+            <div className="flex items-center justify-between bg-white px-4 py-2.5 rounded-2xl border border-parchment-200 shadow-sm text-xs font-medium text-parchment-800">
+              <button 
+                onClick={selectAll}
+                className="flex items-center gap-2 hover:text-terracotta transition-colors"
               >
-                {copied ? <Check className="w-3.5 h-3.5" /> : <Share2 className="w-3.5 h-3.5" />}
-                <span>{copied ? 'Copied Details!' : `Share Selected (${selectedIds.length})`}</span>
+                {selectedIds.length === filteredItems.length && filteredItems.length > 0 ? (
+                  <CheckSquare className="w-4 h-4 text-terracotta" />
+                ) : (
+                  <Square className="w-4 h-4 text-parchment-400" />
+                )}
+                <span>Select All ({filteredItems.length})</span>
               </button>
-            )}
-          </div>
-        )}
 
-        {/* CARDS LIST */}
-        {loading ? (
-          <div className="py-20 text-center text-xs text-parchment-600 animate-pulse">
-            Loading your history...
-          </div>
-        ) : filteredItems.length === 0 ? (
-          <div className="py-16 bg-white rounded-3xl border border-dashed border-parchment-200 text-center p-6 space-y-2">
-            <Sparkles className="w-8 h-8 text-terracotta/40 mx-auto" />
-            <h3 className="font-serif font-bold text-parchment-900">No events saved under this vibe yet</h3>
-            <p className="text-xs text-parchment-700 max-w-xs mx-auto">
-              Head back to the deck to start exploring and picking your local vibes.
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {filteredItems.map(item => {
-              const event = item.events || {};
-              const schedules = getScheduleList(event);
-              const venue = event.venue_name || event.venue || 'Local Venue';
-              const isSelected = selectedIds.includes(item.id);
-
-              const mapUrl = event.latitude && event.longitude 
-                ? `https://www.google.com/maps/search/?api=1&query=${event.latitude},${event.longitude}`
-                : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(venue + ' ' + (event.address || 'Tacoma, WA'))}`;
-
-              return (
-                <div 
-                  key={item.id}
-                  className={`relative bg-white rounded-3xl border transition-all shadow-md overflow-hidden flex flex-col md:flex-row ${
-                    isSelected ? 'border-terracotta ring-1 ring-terracotta' : 'border-parchment-200'
-                  }`}
+              {selectedIds.length > 0 && (
+                <button
+                  onClick={() => handleShare()}
+                  className="flex items-center gap-1.5 bg-terracotta text-white px-3 py-1.5 rounded-xl font-bold hover:bg-terracotta/90 transition-all shadow-sm"
                 >
-                  {/* SELECTION CHECKBOX */}
-                  <button
-                    onClick={() => toggleSelect(item.id)}
-                    className="absolute top-3 left-3 z-20 bg-white/90 backdrop-blur-md p-1.5 rounded-xl border border-parchment-200 shadow-sm"
+                  {copied ? <Check className="w-3.5 h-3.5" /> : <Share2 className="w-3.5 h-3.5" />}
+                  <span>{copied ? 'Copied Details!' : `Share Selected (${selectedIds.length})`}</span>
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* CARDS LIST */}
+          {loading ? (
+            <div className="py-20 text-center text-xs text-parchment-600 animate-pulse">
+              Loading your history...
+            </div>
+          ) : filteredItems.length === 0 ? (
+            <div className="py-16 bg-white rounded-3xl border border-dashed border-parchment-200 text-center p-6 space-y-2">
+              <Sparkles className="w-8 h-8 text-terracotta/40 mx-auto" />
+              <h3 className="font-serif font-bold text-parchment-900">No events saved under this vibe yet</h3>
+              <p className="text-xs text-parchment-700 max-w-xs mx-auto">
+                Head back to the deck to start exploring and picking your local vibes.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {filteredItems.map(item => {
+                const event = item.events || {};
+                const schedules = getScheduleList(event);
+                const venue = event.venue_name || event.venue || 'Local Venue';
+                const isSelected = selectedIds.includes(item.id);
+
+                const mapUrl = event.latitude && event.longitude 
+                  ? `https://www.google.com/maps/search/?api=1&query=${event.latitude},${event.longitude}`
+                  : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(venue + ' ' + (event.address || 'Tacoma, WA'))}`;
+
+                return (
+                  <div 
+                    key={item.id}
+                    className={`relative bg-white rounded-3xl border transition-all shadow-md overflow-hidden flex flex-col md:flex-row ${
+                      isSelected ? 'border-terracotta ring-1 ring-terracotta' : 'border-parchment-200'
+                    }`}
                   >
-                    {isSelected ? (
-                      <CheckSquare className="w-4 h-4 text-terracotta" />
-                    ) : (
-                      <Square className="w-4 h-4 text-parchment-400" />
-                    )}
-                  </button>
+                    {/* SELECTION CHECKBOX */}
+                    <button
+                      onClick={() => toggleSelect(item.id)}
+                      className="absolute top-3 left-3 z-20 bg-white/90 backdrop-blur-md p-1.5 rounded-xl border border-parchment-200 shadow-sm"
+                    >
+                      {isSelected ? (
+                        <CheckSquare className="w-4 h-4 text-terracotta" />
+                      ) : (
+                        <Square className="w-4 h-4 text-parchment-400" />
+                      )}
+                    </button>
 
-                  {/* IMAGE SIDE / HEADER */}
-                  <div className="relative h-48 md:h-auto md:w-56 shrink-0 bg-parchment-100 overflow-hidden">
-                    <img 
-                      src={event.image_url || FALLBACK_IMAGE} 
-                      alt={event.title || 'Event'} 
-                      className="w-full h-full object-cover"
-                      onError={(e) => { e.target.onerror = null; e.target.src = FALLBACK_IMAGE; }}
-                    />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent md:hidden" />
-                    
-                    <span className="absolute bottom-3 left-3 text-[10px] font-bold uppercase tracking-wider bg-black/60 text-white px-2 py-0.5 rounded-full border border-white/20 backdrop-blur-md">
-                      {event.category || 'Experience'}
-                    </span>
-                  </div>
-
-                  {/* DETAILS CONTENT */}
-                  <div className="p-5 flex-1 flex flex-col justify-between space-y-4">
-                    <div className="space-y-2">
-                      <div className="flex items-start justify-between gap-3">
-                        <h3 className="font-serif font-bold text-lg text-parchment-900 leading-tight">
-                          {event.title}
-                        </h3>
-
-                        {/* SINGLE ITEM SHARE BUTTON */}
-                        <button
-                          onClick={() => handleShare(item)}
-                          className="shrink-0 p-2 text-parchment-600 hover:text-terracotta hover:bg-parchment-100 rounded-xl transition-colors"
-                          title="Share event details"
-                        >
-                          <Share2 className="w-4 h-4" />
-                        </button>
-                      </div>
-
-                      <p className="text-xs text-parchment-800 leading-relaxed">
-                        {event.description}
-                      </p>
+                    {/* IMAGE SIDE / HEADER */}
+                    <div className="relative h-48 md:h-auto md:w-56 shrink-0 bg-parchment-100 overflow-hidden">
+                      <img 
+                        src={event.image_url || FALLBACK_IMAGE} 
+                        alt={event.title || 'Event'} 
+                        className="w-full h-full object-cover"
+                        onError={(e) => { e.target.onerror = null; e.target.src = FALLBACK_IMAGE; }}
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent md:hidden" />
+                      
+                      <span className="absolute bottom-3 left-3 text-[10px] font-bold uppercase tracking-wider bg-black/60 text-white px-2 py-0.5 rounded-full border border-white/20 backdrop-blur-md">
+                        {event.category || 'Experience'}
+                      </span>
                     </div>
 
-                    {/* METADATA & SCHEDULE REDIRECTS */}
-                    <div className="space-y-3 pt-3 border-t border-parchment-100 text-xs">
-                      <div className="flex flex-wrap gap-y-1.5 gap-x-4 text-parchment-800">
-                        {mapUrl && (
-                          <a 
-                            href={mapUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="flex items-center gap-1.5 text-terracotta font-medium hover:underline truncate"
+                    {/* DETAILS CONTENT */}
+                    <div className="p-5 flex-1 flex flex-col justify-between space-y-4">
+                      <div className="space-y-2">
+                        <div className="flex items-start justify-between gap-3">
+                          <h3 className="font-serif font-bold text-lg text-parchment-900 leading-tight">
+                            {event.title}
+                          </h3>
+
+                          {/* SINGLE ITEM SHARE BUTTON */}
+                          <button
+                            onClick={() => handleShare(item)}
+                            className="shrink-0 p-2 text-parchment-600 hover:text-terracotta hover:bg-parchment-100 rounded-xl transition-colors"
+                            title="Share event details"
                           >
-                            <MapPin className="w-3.5 h-3.5 shrink-0" />
-                            <span className="truncate">{venue} {event.address ? `• ${event.address}` : ''}</span>
-                          </a>
-                        )}
-
-                        {event.price_info && (
-                          <div className="flex items-center gap-1.5 text-parchment-700">
-                            <Tag className="w-3.5 h-3.5 text-terracotta shrink-0" />
-                            <span>{event.price_info}</span>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* DYNAMIC REGISTRATION LINKS */}
-                      <div className="space-y-1.5">
-                        <div className="flex items-center gap-1 text-[11px] font-medium text-parchment-700">
-                          <Calendar className="w-3.5 h-3.5 text-terracotta" />
-                          <span>Dates & Registration Links:</span>
+                            <Share2 className="w-4 h-4" />
+                          </button>
                         </div>
 
-                        <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
-                          {schedules.length > 0 ? (
-                            schedules.map((sched, idx) => (
-                              <a
-                                key={idx}
-                                href={sched.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="shrink-0 flex items-center gap-1 bg-parchment-100 hover:bg-terracotta hover:text-white text-parchment-900 border border-parchment-200 font-semibold py-1 px-2.5 rounded-xl text-xs transition-all shadow-sm"
-                              >
-                                <span>{sched.label}</span>
-                                <ExternalLink className="w-3 h-3 opacity-70" />
-                              </a>
-                            ))
-                          ) : (
-                            <span className="text-xs text-parchment-600 italic">No direct links available</span>
+                        <p className="text-xs text-parchment-800 leading-relaxed">
+                          {event.description}
+                        </p>
+                      </div>
+
+                      {/* METADATA & SCHEDULE REDIRECTS */}
+                      <div className="space-y-3 pt-3 border-t border-parchment-100 text-xs">
+                        <div className="flex flex-wrap gap-y-1.5 gap-x-4 text-parchment-800">
+                          {mapUrl && (
+                            <a 
+                              href={mapUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-1.5 text-terracotta font-medium hover:underline truncate"
+                            >
+                              <MapPin className="w-3.5 h-3.5 shrink-0" />
+                              <span className="truncate">{venue} {event.address ? `• ${event.address}` : ''}</span>
+                            </a>
+                          )}
+
+                          {event.price_info && (
+                            <div className="flex items-center gap-1.5 text-parchment-700">
+                              <Tag className="w-3.5 h-3.5 text-terracotta shrink-0" />
+                              <span>{event.price_info}</span>
+                            </div>
                           )}
                         </div>
+
+                        {/* DYNAMIC REGISTRATION LINKS */}
+                        <div className="space-y-1.5">
+                          <div className="flex items-center gap-1 text-[11px] font-medium text-parchment-700">
+                            <Calendar className="w-3.5 h-3.5 text-terracotta" />
+                            <span>Dates & Registration Links:</span>
+                          </div>
+
+                          <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
+                            {schedules.length > 0 ? (
+                              schedules.map((sched, idx) => (
+                                <a
+                                  key={idx}
+                                  href={sched.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="shrink-0 flex items-center gap-1 bg-parchment-100 hover:bg-terracotta hover:text-white text-parchment-900 border border-parchment-200 font-semibold py-1 px-2.5 rounded-xl text-xs transition-all shadow-sm"
+                                >
+                                  <span>{sched.label}</span>
+                                  <ExternalLink className="w-3 h-3 opacity-70" />
+                                </a>
+                              ))
+                            ) : (
+                              <span className="text-xs text-parchment-600 italic">No direct links available</span>
+                            )}
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </main>
     </div>
   );
 }
