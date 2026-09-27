@@ -1,5 +1,5 @@
 // src/lib/tracking.js
-import { supabase } from './supabase';
+import { supabase } from './supabaseClient';
 
 /**
  * Logs an event interaction into Supabase with optional zero-PII user hash

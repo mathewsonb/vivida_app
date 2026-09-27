@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { hashEmail } from '../lib/crypto';
 import UserHistoryReport from './UserHistoryReport';
 import { X, ShieldCheck, Lock, Share2, Mail, MessageSquare, Copy, Check, Calendar, MapPin } from 'lucide-react';
@@ -8,14 +8,23 @@ export default function HistoryModal({
   onClose, 
   userHash, 
   onUserHashCreated, 
-  bookmarks = [] 
+  bookmarks = [] // Default safety guarantee
 }) {
   const [emailInput, setEmailInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [selectedEventIds, setSelectedEventIds] = useState([]);
   const [copied, setCopied] = useState(false);
 
+  // Sync selected IDs whenever bookmarks array updates safely
+  useEffect(() => {
+    if (Array.isArray(bookmarks) && bookmarks.length > 0) {
+      setSelectedEventIds(bookmarks.map((b) => b?.id).filter(Boolean));
+    }
+  }, [bookmarks]);
+
   if (!isOpen) return null;
+
+  const safeBookmarks = Array.isArray(bookmarks) ? bookmarks : [];
 
   const handleOptIn = async (e) => {
     e.preventDefault();
@@ -24,9 +33,11 @@ export default function HistoryModal({
     setLoading(true);
     try {
       const hash = await hashEmail(emailInput);
-      localStorage.setItem('vivida_user_hash', hash);
-      onUserHashCreated(hash);
-      setEmailInput('');
+      if (hash) {
+        localStorage.setItem('vivida_user_hash', hash);
+        onUserHashCreated(hash);
+        setEmailInput('');
+      }
     } catch (err) {
       console.error('Error hashing email:', err);
     } finally {
@@ -35,7 +46,11 @@ export default function HistoryModal({
   };
 
   const handleClearSession = () => {
-    localStorage.removeItem('vivida_user_hash');
+    try {
+      localStorage.removeItem('vivida_user_hash');
+    } catch (e) {
+      console.warn(e);
+    }
     onUserHashCreated(null);
   };
 
@@ -46,15 +61,14 @@ export default function HistoryModal({
   };
 
   const toggleSelectAll = () => {
-    if (selectedEventIds.length === bookmarks.length) {
+    if (selectedEventIds.length === safeBookmarks.length) {
       setSelectedEventIds([]);
     } else {
-      setSelectedEventIds(bookmarks.map((b) => b.id));
+      setSelectedEventIds(safeBookmarks.map((b) => b.id));
     }
   };
 
-  // Format selection for sharing
-  const selectedEvents = bookmarks.filter((e) => selectedEventIds.includes(e.id));
+  const selectedEvents = safeBookmarks.filter((e) => selectedEventIds.includes(e?.id));
   
   const generateShareText = () => {
     if (selectedEvents.length === 0) return '';
@@ -67,31 +81,37 @@ export default function HistoryModal({
   const handleCopyShare = async () => {
     const text = generateShareText();
     if (!text) return;
-    await navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback for mobile browser clipboard permission restriction
+      alert('Copied to clipboard!');
+    }
   };
 
   const handleEmailShare = () => {
     const text = generateShareText();
     if (!text) return;
-    const subject = encodeURIComponent('Events to check out!');
-    const body = encodeURIComponent(text);
-    window.location.href = `mailto:?subject=${subject}&body=${body}`;
+    window.location.href = `mailto:?subject=${encodeURIComponent('Events to check out!')}&body=${encodeURIComponent(text)}`;
   };
 
   const handleSMSShare = () => {
     const text = generateShareText();
     if (!text) return;
-    const body = encodeURIComponent(text);
-    window.location.href = `sms:?&body=${body}`;
+    window.location.href = `sms:?&body=${encodeURIComponent(text)}`;
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-parchment-100 rounded-3xl p-6 max-w-lg w-full border border-parchment-300 shadow-2xl relative max-h-[90vh] flex flex-col">
-        
-        {/* Close Button */}
+    <div 
+      className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4 touch-auto"
+      onClick={onClose}
+    >
+      <div 
+        className="bg-parchment-100 rounded-3xl p-6 max-w-lg w-full border border-parchment-300 shadow-2xl relative max-h-[90vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()} // Prevent clicking inside modal from closing it
+      >
         <button
           onClick={onClose}
           className="absolute top-4 right-4 text-parchment-700 hover:text-parchment-900 p-1 z-10"
@@ -101,7 +121,6 @@ export default function HistoryModal({
         </button>
 
         {!userHash ? (
-          /* Unauthenticated State */
           <div className="py-2 overflow-y-auto pr-1">
             <div className="w-12 h-12 bg-terracotta/10 rounded-2xl flex items-center justify-center mb-4 text-terracotta">
               <Lock className="w-6 h-6" />
@@ -137,7 +156,6 @@ export default function HistoryModal({
             </div>
           </div>
         ) : (
-          /* Authenticated State & Event Selection Deck */
           <div className="flex flex-col h-full overflow-hidden">
             <div className="mb-4 pr-6">
               <h3 className="font-serif text-xl font-bold text-parchment-900">
@@ -148,9 +166,8 @@ export default function HistoryModal({
               </p>
             </div>
 
-            {/* Saved Bookmarks List */}
             <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 my-2">
-              {bookmarks.length === 0 ? (
+              {safeBookmarks.length === 0 ? (
                 <div className="text-center py-8 text-parchment-600 text-sm">
                   No saved events in this session yet. Swipe right or tap "Totally My Vibe" on cards to bookmark!
                 </div>
@@ -161,12 +178,12 @@ export default function HistoryModal({
                       onClick={toggleSelectAll}
                       className="font-semibold text-terracotta hover:underline"
                     >
-                      {selectedEventIds.length === bookmarks.length ? 'Deselect All' : 'Select All'}
+                      {selectedEventIds.length === safeBookmarks.length ? 'Deselect All' : 'Select All'}
                     </button>
                     <span>{selectedEventIds.length} selected</span>
                   </div>
 
-                  {bookmarks.map((event) => {
+                  {safeBookmarks.map((event) => {
                     const isSelected = selectedEventIds.includes(event.id);
                     return (
                       <div
@@ -181,7 +198,7 @@ export default function HistoryModal({
                         <input
                           type="checkbox"
                           checked={isSelected}
-                          onChange={() => {}} // Handled by parent div onClick
+                          onChange={() => {}}
                           className="mt-1 h-4 w-4 accent-terracotta rounded cursor-pointer"
                         />
                         <div className="flex-1 min-w-0">
@@ -210,7 +227,6 @@ export default function HistoryModal({
               )}
             </div>
 
-            {/* Sharing Toolbar */}
             {selectedEventIds.length > 0 && (
               <div className="pt-3 border-t border-parchment-200 flex items-center justify-between gap-2">
                 <button
@@ -237,7 +253,6 @@ export default function HistoryModal({
               </div>
             )}
 
-            {/* Embedded History Report Component */}
             <div className="mt-4 pt-3 border-t border-parchment-200">
               <UserHistoryReport userHash={userHash} onClearSession={handleClearSession} />
             </div>
