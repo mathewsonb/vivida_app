@@ -1,30 +1,38 @@
 root: vivida_app/
 .gitHub/workflows/deploy.yaml = ```
 name: Deploy Vivida Frontend to GitHub Pages
+
 on:
   push:
     branches:
       - main
+
 permissions:
   contents: read
   pages: write
   id-token: write
+
 concurrency:
   group: 'pages'
   cancel-in-progress: true
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: 'npm'
+
       - name: Install Dependencies
         run: npm ci
+
       - name: Sanity Check Secrets Resolution
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
@@ -35,6 +43,7 @@ jobs:
           else
             echo "SUCCESS: VITE_SUPABASE_URL is populated."
           fi
+
       - name: Build Project
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
@@ -42,39 +51,48 @@ jobs:
         run: |
           npm run build
           cp dist/index.html dist/404.html
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
+
       - name: Upload Build Artifacts
         uses: actions/upload-pages-artifact@v3
         with:
           path: './dist'
+
       - name: Deploy to GitHub Pages
         id: deployment
         # Note: environment scope is handled internally by deploy-pages action here
         uses: actions/deploy-pages@v4
 ```
+
 .gitHub/workflows/ingest.yaml = ```
 name: Scheduled Event Ingestion Pipeline
+
 on:
   schedule:
     # Runs daily at 02:00 UTC (18:00 PST / 19:00 PDT)
     - cron: '0 2 * * *'
   workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+
 jobs:
   ingest:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
+
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
       - name: Run Ingestion & Gemini Triaxial Vectorizer Pipeline
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -82,23 +100,22 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python pipeline.py
 ```
-dist/index.html = ```
-```
-src/components/ActionButtons.jsx = ```
-```
-src/components/BookmarksDrawer.jsx = ```
-```
+
 src/components/EmailPromptModal.jsx = ```
 import React, { useState } from 'react';
 import { hashEmail } from '../lib/crypto';
 import { Mail, Sparkles, ShieldCheck, X } from 'lucide-react';
+
 export default function EmailPromptModal({ isOpen, onClose, onSuccess }) {
   const [email, setEmail] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
   if (!isOpen) return null;
+
   const handleHashAndSubmit = async (e) => {
     e.preventDefault();
     if (!email || !email.includes('@')) return;
+
     setIsSubmitting(true);
     try {
       // Standardized client-side hashing via lib/crypto
@@ -110,6 +127,7 @@ export default function EmailPromptModal({ isOpen, onClose, onSuccess }) {
       setIsSubmitting(false);
     }
   };
+
   return (
     <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-xl max-w-sm w-full p-6 relative border border-parchment-200">
@@ -120,15 +138,18 @@ export default function EmailPromptModal({ isOpen, onClose, onSuccess }) {
         >
           <X className="w-5 h-5" />
         </button>
+
         <div className="flex items-center gap-2 mb-3 text-terracotta">
           <Sparkles className="w-5 h-5" />
           <h2 className="text-lg font-bold text-parchment-900">
             Save Your Vibe History
           </h2>
         </div>
+
         <p className="text-xs text-parchment-600 mb-4 leading-relaxed">
           Enter your email to sync your saved events across visits. Your email is hashed client-side—we never see or store your raw address.
         </p>
+
         <form onSubmit={handleHashAndSubmit} className="space-y-3">
           <div>
             <label className="block text-xs font-semibold text-parchment-700 mb-1">
@@ -146,10 +167,12 @@ export default function EmailPromptModal({ isOpen, onClose, onSuccess }) {
               />
             </div>
           </div>
+
           <div className="flex items-center gap-1.5 text-[11px] text-emerald-700 font-medium">
             <ShieldCheck className="w-3.5 h-3.5" />
             <span>Zero-PII SHA-256 Hashing Guarantee</span>
           </div>
+
           <div className="flex items-center justify-end gap-2 pt-2">
             <button
               type="button"
@@ -172,26 +195,32 @@ export default function EmailPromptModal({ isOpen, onClose, onSuccess }) {
   );
 }
 ```
+
 src/components/Header.jsx = ```
 import React, { useState, useEffect, useRef } from 'react';
 import { SlidersHorizontal, Bookmark, History, ChevronUp, Sparkles } from 'lucide-react';
 import MoodSliders from './MoodSliders';
+
 export default function Header({ mood, onChangeMood, onOpenHistory, onOpenSaved, bookmarkCount, hasUserHash }) {
   const [isSlidersOpen, setIsSlidersOpen] = useState(false);
   const collapseTimeoutRef = useRef(null);
+
   const handleMoodChange = (newMood) => {
     onChangeMood(newMood);
+
     // Auto-collapse after 2.5 seconds of inactivity
     if (collapseTimeoutRef.current) clearTimeout(collapseTimeoutRef.current);
     collapseTimeoutRef.current = setTimeout(() => {
       setIsSlidersOpen(false);
     }, 2500);
   };
+
   useEffect(() => {
     return () => {
       if (collapseTimeoutRef.current) clearTimeout(collapseTimeoutRef.current);
     };
   }, []);
+
   return (
     <header className="sticky top-0 z-40 bg-parchment-50/95 backdrop-blur-md border-b border-parchment-200 shadow-sm">
       <div className="max-w-md mx-auto px-4 py-3 flex items-center justify-between">
@@ -204,6 +233,7 @@ export default function Header({ mood, onChangeMood, onOpenHistory, onOpenSaved,
             Vivida
           </span>
         </div>
+
         {/* Action Controls */}
         <div className="flex items-center gap-2">
           {/* Mood Slider Toggle */}
@@ -224,6 +254,7 @@ export default function Header({ mood, onChangeMood, onOpenHistory, onOpenSaved,
             <SlidersHorizontal className="w-3.5 h-3.5" />
             <span>Vibe</span>
           </button>
+
           {/* Saved Events Button */}
           <button
             type="button"
@@ -241,6 +272,7 @@ export default function Header({ mood, onChangeMood, onOpenHistory, onOpenSaved,
               </span>
             )}
           </button>
+
           {/* History Button */}
           <button
             type="button"
@@ -255,6 +287,7 @@ export default function Header({ mood, onChangeMood, onOpenHistory, onOpenSaved,
           </button>
         </div>
       </div>
+
       {/* Collapsible Drawer Area */}
       {isSlidersOpen && (
         <div className="border-t border-parchment-200/60 bg-parchment-100/90 px-4 py-3 shadow-inner">
@@ -275,11 +308,13 @@ export default function Header({ mood, onChangeMood, onOpenHistory, onOpenSaved,
   );
 }
 ```
+
 src/components/HistoryModal.jsx = ```
 import React, { useState, useEffect } from 'react';
 import { hashEmail } from '../lib/crypto';
 import UserHistoryReport from './UserHistoryReport';
 import { X, ShieldCheck, Lock, Share2, Mail, MessageSquare, Copy, Check, Calendar, MapPin } from 'lucide-react';
+
 export default function HistoryModal({ 
   isOpen, 
   onClose, 
@@ -291,17 +326,22 @@ export default function HistoryModal({
   const [loading, setLoading] = useState(false);
   const [selectedEventIds, setSelectedEventIds] = useState([]);
   const [copied, setCopied] = useState(false);
+
   // Sync selected IDs whenever bookmarks array updates safely
   useEffect(() => {
     if (Array.isArray(bookmarks) && bookmarks.length > 0) {
       setSelectedEventIds(bookmarks.map((b) => b?.id).filter(Boolean));
     }
   }, [bookmarks]);
+
   if (!isOpen) return null;
+
   const safeBookmarks = Array.isArray(bookmarks) ? bookmarks : [];
+
   const handleOptIn = async (e) => {
     e.preventDefault();
     if (!emailInput) return;
+
     setLoading(true);
     try {
       const hash = await hashEmail(emailInput);
@@ -316,6 +356,7 @@ export default function HistoryModal({
       setLoading(false);
     }
   };
+
   const handleClearSession = () => {
     try {
       localStorage.removeItem('vivida_user_hash');
@@ -324,11 +365,13 @@ export default function HistoryModal({
     }
     onUserHashCreated(null);
   };
+
   const toggleSelectEvent = (id) => {
     setSelectedEventIds((prev) =>
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
     );
   };
+
   const toggleSelectAll = () => {
     if (selectedEventIds.length === safeBookmarks.length) {
       setSelectedEventIds([]);
@@ -336,7 +379,9 @@ export default function HistoryModal({
       setSelectedEventIds(safeBookmarks.map((b) => b.id));
     }
   };
+
   const selectedEvents = safeBookmarks.filter((e) => selectedEventIds.includes(e?.id));
+  
   const generateShareText = () => {
     if (selectedEvents.length === 0) return '';
     const lines = selectedEvents.map(
@@ -344,6 +389,7 @@ export default function HistoryModal({
     );
     return `Hey! Check out these events I picked out on Vivida:\n\n${lines.join('\n')}\n\nFind your vibe at ${window.location.origin}`;
   };
+
   const handleCopyShare = async () => {
     const text = generateShareText();
     if (!text) return;
@@ -356,23 +402,26 @@ export default function HistoryModal({
       alert('Copied to clipboard!');
     }
   };
+
   const handleEmailShare = () => {
     const text = generateShareText();
     if (!text) return;
     window.location.href = `mailto:?subject=${encodeURIComponent('Events to check out!')}&body=${encodeURIComponent(text)}`;
   };
+
   const handleSMSShare = () => {
     const text = generateShareText();
     if (!text) return;
     window.location.href = `sms:?&body=${encodeURIComponent(text)}`;
   };
+
   return (
     <div 
-      className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4 touch-auto"
+      className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 touch-none"
       onClick={onClose}
     >
       <div 
-        className="bg-parchment-100 rounded-3xl p-6 max-w-lg w-full border border-parchment-300 shadow-2xl relative max-h-[90vh] flex flex-col"
+        className="bg-parchment-100 rounded-t-3xl sm:rounded-3xl p-6 max-w-lg w-full border border-parchment-300 shadow-2xl relative max-h-[85dvh] flex flex-col touch-auto"
         onClick={(e) => e.stopPropagation()} // Prevent clicking inside modal from closing it
       >
         <button
@@ -382,6 +431,7 @@ export default function HistoryModal({
         >
           <X className="w-5 h-5" />
         </button>
+
         {!userHash ? (
           <div className="py-2 overflow-y-auto pr-1">
             <div className="w-12 h-12 bg-terracotta/10 rounded-2xl flex items-center justify-center mb-4 text-terracotta">
@@ -393,6 +443,7 @@ export default function HistoryModal({
             <p className="text-sm text-parchment-700 mb-6 leading-relaxed">
               Enter your email to view your saved events and mood analytics. Your email address is immediately converted into a zero-PII cryptographic hash on your device—we never store or see your raw email.
             </p>
+
             <form onSubmit={handleOptIn} className="space-y-3">
               <input
                 type="email"
@@ -410,6 +461,7 @@ export default function HistoryModal({
                 {loading ? 'Generating Secure Hash...' : 'Access My History'}
               </button>
             </form>
+
             <div className="flex items-center gap-2 mt-4 text-xs text-parchment-700 justify-center">
               <ShieldCheck className="w-4 h-4 text-emerald-600" />
               <span>Zero-PII guarantee • Client-side SHA-256</span>
@@ -425,6 +477,7 @@ export default function HistoryModal({
                 Select events below to generate invite links or send via Email/Text.
               </p>
             </div>
+
             <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 my-2">
               {safeBookmarks.length === 0 ? (
                 <div className="text-center py-8 text-parchment-600 text-sm">
@@ -441,6 +494,7 @@ export default function HistoryModal({
                     </button>
                     <span>{selectedEventIds.length} selected</span>
                   </div>
+
                   {safeBookmarks.map((event) => {
                     const isSelected = selectedEventIds.includes(event.id);
                     return (
@@ -484,6 +538,7 @@ export default function HistoryModal({
                 </>
               )}
             </div>
+
             {selectedEventIds.length > 0 && (
               <div className="pt-3 border-t border-parchment-200 flex items-center justify-between gap-2">
                 <button
@@ -509,6 +564,7 @@ export default function HistoryModal({
                 </button>
               </div>
             )}
+
             <div className="mt-4 pt-3 border-t border-parchment-200">
               <UserHistoryReport userHash={userHash} onClearSession={handleClearSession} />
             </div>
@@ -519,9 +575,11 @@ export default function HistoryModal({
   );
 }
 ```
+
 src/components/MoodSliders.jsx = ```
 import React from 'react';
 import { Zap, Users, Compass } from 'lucide-react';
+
 export default function MoodSliders({ mood, onChange }) {
   const handleSliderChange = (key, value) => {
     onChange({
@@ -529,6 +587,7 @@ export default function MoodSliders({ mood, onChange }) {
       [key]: parseFloat(value)
     });
   };
+
   return (
     <div 
       className="space-y-3 py-1"
@@ -554,6 +613,7 @@ export default function MoodSliders({ mood, onChange }) {
           className="w-full h-1.5 bg-parchment-200/80 rounded-lg appearance-none cursor-pointer accent-terracotta touch-none"
         />
       </div>
+
       {/* Social Slider */}
       <div className="space-y-1">
         <div className="flex justify-between text-xs text-parchment-800 font-medium">
@@ -599,8 +659,7 @@ export default function MoodSliders({ mood, onChange }) {
   );
 }
 ```
-src/components/ShareModal.jsx = ```
-```
+
 src/components/SwipeDeck.jsx = ```
 import React from 'react';
 import { Calendar, MapPin, Sparkles, Flame, ExternalLink, Tag, Bookmark } from 'lucide-react';
@@ -924,6 +983,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
   );
 }
 ```
+
 src/components/UserHistoryReport.jsx = ```
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient.js';
@@ -1150,6 +1210,7 @@ export default function UserHistoryReport({ userHash, onClearSession }) {
   );
 }
 ```
+
 src/hooks/useEmailHash.js = ```
 export async function generateSaltedHash(email, staticSalt) {
   const normalized = email.trim().toLowerCase() + staticSalt;
@@ -1160,12 +1221,7 @@ export async function generateSaltedHash(email, staticSalt) {
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 ```
-src/hooks/useSessionEpoch.js = ```
-```
-src/hooks/useVectorMatch.js = ```
-```
-src/lib/calendar.js = ```
-```
+
 src/lib/crypto.js = ```
 // src/lib/crypto.js
 const APP_SALT = import.meta.env.VITE_APP_SALT;
@@ -1194,6 +1250,7 @@ export async function hashEmail(email) {
   return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 ```
+
 src/lib/supabaseClient.js = ```
 import { createClient } from '@supabase/supabase-js';
 
@@ -1208,27 +1265,39 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 export const supabase = createClient(supabaseUrl || '', supabaseAnonKey || '');
 ```
+
 src/lib/tracking.js = ```
 // src/lib/tracking.js
-import { supabase } from './supabase';
+import { supabase } from './supabaseClient';
 
 /**
- * Logs an event interaction into Supabase with optional zero-PII user hash
+ * Tracks user interactions with events in Supabase.
+ * @param {string} userHash - SHA-256 hash of the user's email/identifier
+ * @param {string|number} eventId - ID of the event interacted with
+ * @param {'not_my_scene' | 'maybe_later' | 'totally_vibe'} interactionType - Interaction outcome
  */
-export async function trackEventInteraction(eventId, interactionType = 'vibe') {
-  const userHash = localStorage.getItem('vivida_user_hash') || null;
+export async function trackEventInteraction(userHash, eventId, interactionType) {
+  if (!userHash) return;
 
   try {
-    await supabase.from('event_conversions').insert({
-      event_id: eventId,
-      interaction_type: interactionType, // 'vibe', 'save', or 'vendor_click'
-      user_hash: userHash
-    });
+    const { error } = await supabase
+      .from('event_conversions')
+      .insert({
+        user_hash: userHash,
+        event_id: eventId,
+        interaction_type: interactionType,
+        created_at: new Date().toISOString()
+      });
+
+    if (error) {
+      console.error('Error recording interaction:', error.message);
+    }
   } catch (err) {
-    console.error('Failed to log event conversion:', err);
+    console.error('Failed to log interaction:', err);
   }
 }
 ```
+
 App.jsx = ```
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from './lib/supabaseClient.js';
@@ -1244,11 +1313,9 @@ export default function App() {
   const [sessionKey, setSessionKey] = useState('');
   const [userHash, setUserHash] = useState(null);
 
-  // Modals state
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isInitialPromptOpen, setIsInitialPromptOpen] = useState(false);
   
-  // Local Bookmarks state with persistence
   const [bookmarks, setBookmarks] = useState(() => {
     try {
       const saved = localStorage.getItem('vivida_bookmarks');
@@ -1258,14 +1325,12 @@ export default function App() {
     }
   });
 
-  // Triaxial Mood Vector State
   const [mood, setMood] = useState({
     energy: 0.5,
     social: 0.5,
     novelty: 0.5,
   });
 
-  // Persist Bookmarks updates to localStorage
   useEffect(() => {
     try {
       localStorage.setItem('vivida_bookmarks', JSON.stringify(bookmarks));
@@ -1274,7 +1339,6 @@ export default function App() {
     }
   }, [bookmarks]);
 
-  // Initialize Session Key, User Hash, and Initial Prompt on Mount
   useEffect(() => {
     let activeKey = localStorage.getItem('vivida_session_key');
     if (!activeKey) {
@@ -1358,7 +1422,6 @@ export default function App() {
     }
   };
 
-  // Distance Sorting via Euclidean Triaxial Mood Vectors
   const rankedEvents = useMemo(() => {
     if (!rawEvents || rawEvents.length === 0) return [];
 
@@ -1378,7 +1441,6 @@ export default function App() {
     });
   }, [rawEvents, mood]);
 
-  // Handle User Swipes and Log Interactions to Supabase
   const handleInteraction = useCallback(async (type, event) => {
     if (!event) return;
 
@@ -1402,16 +1464,7 @@ export default function App() {
     };
 
     try {
-      const { data, error } = await supabase
-        .from('event_conversions')
-        .insert(payload)
-        .select();
-
-      if (error) {
-        console.error('Supabase Insert Error:', error.message, error.details, error.hint);
-      } else {
-        console.log('Successfully inserted conversion record:', data);
-      }
+      await supabase.from('event_conversions').insert(payload);
     } catch (err) {
       console.error('Unexpected error recording interaction:', err);
     }
@@ -1420,8 +1473,8 @@ export default function App() {
   const activeTopEvent = rankedEvents[0];
 
   return (
-    <div className="min-h-screen bg-parchment-50 text-parchment-900 flex flex-col font-sans">
-      {/* Header with Connected Props */}
+    <div className="h-dvh w-full bg-parchment-50 text-parchment-900 flex flex-col justify-between overflow-hidden pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
+      {/* Header */}
       <Header 
         mood={mood}
         onChangeMood={setMood}
@@ -1431,10 +1484,11 @@ export default function App() {
         hasUserHash={!!userHash}
       />
 
-      <main className="flex-1 max-w-md w-full mx-auto px-4 py-2 flex flex-col justify-between">
-        <div className="my-auto">
+      {/* Main Container */}
+      <main className="flex-1 w-full max-w-md mx-auto px-4 flex flex-col justify-between overflow-hidden py-2">
+        <div className="flex-1 flex flex-col justify-center items-center overflow-hidden">
           {loading ? (
-            <div className="h-[440px] flex flex-col items-center justify-center text-parchment-800/60">
+            <div className="flex flex-col items-center justify-center text-parchment-800/60">
               <Sparkles className="w-8 h-8 animate-spin text-terracotta mb-2" />
               <span className="text-xs font-medium">Fetching hyper-local pulse...</span>
             </div>
@@ -1447,21 +1501,20 @@ export default function App() {
           )}
         </div>
 
+        {/* Action Bar */}
         {!loading && activeTopEvent && (
-          <div className="flex items-center justify-center gap-4 my-4">
+          <div className="flex items-center justify-center gap-6 py-2 shrink-0">
             <button
               onClick={() => handleInteraction('not_my_scene', activeTopEvent)}
-              className="w-14 h-14 rounded-full bg-white border border-parchment-200 shadow-md flex items-center justify-center text-rose-600 hover:bg-rose-50 transition-colors active:scale-95"
-              title="Not My Scene"
+              className="w-16 h-16 rounded-full bg-white border border-parchment-200 shadow-lg flex items-center justify-center text-rose-600 hover:bg-rose-50 active:scale-90 transition-transform"
               aria-label="Not My Scene"
             >
-              <ThumbsDown className="w-6 h-6" />
+              <ThumbsDown className="w-7 h-7" />
             </button>
 
             <button
               onClick={() => handleInteraction('maybe_later', activeTopEvent)}
-              className="w-12 h-12 rounded-full bg-white border border-parchment-200 shadow-md flex items-center justify-center text-amber-600 hover:bg-amber-50 transition-colors active:scale-95"
-              title="Maybe Later"
+              className="w-12 h-12 rounded-full bg-white border border-parchment-200 shadow-md flex items-center justify-center text-amber-600 hover:bg-amber-50 active:scale-90 transition-transform"
               aria-label="Maybe Later"
             >
               <Heart className="w-5 h-5" />
@@ -1469,16 +1522,16 @@ export default function App() {
 
             <button
               onClick={() => handleInteraction('totally_vibe', activeTopEvent)}
-              className="w-14 h-14 rounded-full bg-terracotta text-white shadow-lg flex items-center justify-center hover:bg-terracotta-hover transition-colors active:scale-95"
-              title="Totally My Vibe"
+              className="w-16 h-16 rounded-full bg-terracotta text-white shadow-xl flex items-center justify-center hover:bg-terracotta-hover active:scale-90 transition-transform"
               aria-label="Totally My Vibe"
             >
-              <Flame className="w-6 h-6 fill-white" />
+              <Flame className="w-7 h-7 fill-white" />
             </button>
           </div>
         )}
       </main>
 
+      {/* Modals */}
       {isInitialPromptOpen && (
         <EmailPromptModal
           isOpen={isInitialPromptOpen}
@@ -1505,11 +1558,34 @@ export default function App() {
   );
 }
 ```
+
 index.css = ```
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  html, body {
+    height: 100%;
+    height: 100dvh; /* Dynamic Viewport Height for mobile browsers */
+    overflow: hidden;
+    overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    user-select: none;
+  }
+}
+
+/* Custom scrollbars for modal scrollable areas */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
 ```
+
 main.jsx = ```
 import React from 'react'
 import ReactDOM from 'react-dom/client'
@@ -1522,28 +1598,27 @@ ReactDOM.createRoot(document.getElementById('root')).render(
   </React.StrictMode>,
 )
 ```
+
 index.html = ```
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="h-full overflow-hidden select-none touch-none">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Vivida — Local Mood Discovery</title>
-    <!-- Google Fonts for Parchment & Minimalist Aesthetic -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#FBF9F5" />
+    <title>Vivida - Find Your Scene</title>
+    <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;0,700;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   </head>
-  <body class="bg-parchment-50 text-parchment-900 antialiased selection:bg-terracotta selection:text-white">
-    <!-- React DOM Mount Point -->
-    <div id="root"></div>
-    
-    <!-- Vite Module Entry Point -->
+  <body class="h-full w-full bg-parchment-50 text-parchment-900 antialiased selection:bg-terracotta selection:text-white overflow-hidden">
+    <div id="root" class="h-full w-full"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
 ```
+
 package-lock.json = ```
 {
   "name": "vivida",
@@ -7158,6 +7233,7 @@ package-lock.json = ```
   }
 }
 ```
+
 package.json = ```
 {
   "name": "vivida",
@@ -7201,14 +7277,7 @@ package.json = ```
   }
 }
 ```
-postcss.config.js = ```
-export default {
-  plugins: {
-    tailwindcss: {},
-    autoprefixer: {},
-  },
-};
-```
+
 tailwind.config.js = ```
 /** @type {import('tailwindcss').Config} */
 export default {
@@ -7245,6 +7314,7 @@ export default {
   plugins: [],
 };
 ```
+
 vite.config.js = ```
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
