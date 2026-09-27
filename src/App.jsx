@@ -2,17 +2,17 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from './lib/supabaseClient.js';
 import Header from './components/Header';
 import SwipeDeck from './components/SwipeDeck';
-import HistoryModal from './components/HistoryModal';
 import EmailPromptModal from './components/EmailPromptModal';
 import { ThumbsDown, Heart, Flame, Sparkles } from 'lucide-react';
+import HistoryPage from './components/HistoryPage';
 
 export default function App() {
   const [rawEvents, setRawEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sessionKey, setSessionKey] = useState('');
   const [userHash, setUserHash] = useState(null);
+  const [currentView, setCurrentView] = useState('deck'); // 'deck' | 'history'
 
-  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isInitialPromptOpen, setIsInitialPromptOpen] = useState(false);
   
   const [bookmarks, setBookmarks] = useState(() => {
@@ -171,14 +171,20 @@ export default function App() {
 
   const activeTopEvent = rankedEvents[0];
 
+  // RENDER HISTORY PAGE VIEW WHEN ACTIVE
+  if (currentView === 'history') {
+    return <HistoryPage onBack={() => setCurrentView('deck')} />;
+  }
+
+  // RENDER SWIPE DECK VIEW
   return (
     <div className="h-dvh w-full bg-parchment-50 text-parchment-900 flex flex-col justify-between overflow-hidden pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
       {/* Header */}
       <Header 
         mood={mood}
         onChangeMood={setMood}
-        onOpenSaved={() => setIsHistoryOpen(true)}
-        onOpenHistory={() => setIsHistoryOpen(true)}
+        onOpenSaved={() => setCurrentView('history')}
+        onOpenHistory={() => setCurrentView('history')}
         bookmarkCount={bookmarks.length}
         hasUserHash={!!userHash}
       />
@@ -242,17 +248,6 @@ export default function App() {
           }}
         />
       )}
-
-      <HistoryModal
-        isOpen={isHistoryOpen}
-        onClose={() => setIsHistoryOpen(false)}
-        userHash={userHash}
-        bookmarks={bookmarks}
-        onUserHashCreated={(newHash) => {
-          setUserHash(newHash);
-          localStorage.setItem('vivida_user_hash', newHash);
-        }}
-      />
     </div>
   );
 }
