@@ -33,7 +33,7 @@
 |Visit Tacoma-Pierce County|[visitpiercecounty.com](https://www.visitpiercecounty.com/events/?bounds=false&view=list&sort=date)|Community Sponsored|staged|
 |Port of Tacoma|[portoftacoma.com](https://www.portoftacoma.com/events/list)|Public Utility or Government|assessment|
 |City of Tacoma|[tacoma.gov](https://tacoma.gov/events/)|Public Utility or Government|staged|
-|Federal Way Performing Arts Center|[fwpaec.org](https://fwpaec.org/event-calendar/)|Event Center|staged|
+|Federal Way Performing Arts Center|[fwpaec.org](https://fwpaec.org/event-calendar/)|Event Center|production|
 |text|[biz.com](url)|text|staged|
 |text|[biz.com](url)|text|staged|
 |text|[biz.com](url)|text|staged|
