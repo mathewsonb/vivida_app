@@ -256,6 +256,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
                 <img
                   src={activeEvent.image_url || FALLBACK_IMAGE}
                   alt={activeEvent.title || 'Event image'}
+                  referrerPolicy='no-referrer'
                   onError={(e) => {
                     e.target.onerror = null;
                     e.target.src = FALLBACK_IMAGE;
