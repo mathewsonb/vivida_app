@@ -8,6 +8,35 @@ import HistoryPage from './components/HistoryPage';
 import { getCurrentMood, recordSwipe, setCurrentMood, applyVectorDrift } from './services/historyService';
 import { getOrCreateClientId } from './utils/session';
 
+/**
+ * Calculates Euclidean similarity score between user mood and event vector in [0, 1]^3 space.
+ * Uses a Gaussian similarity kernel: Sim = exp(- distSquared / (2 * sigma^2))
+ * 
+ * @param {Object} userMood Current user mood vector { energy, social, novelty }
+ * @param {Object} event Event object with coordinate vectors
+ * @returns {number} Normalized similarity score between 0.0 and 1.0
+ */
+const calculateEuclideanSimilarity = (userMood, event) => {
+  if (!userMood || !event) return 0;
+
+  const uE = Number(userMood.energy ?? 0.5);
+  const uS = Number(userMood.social ?? 0.5);
+  const uN = Number(userMood.novelty ?? 0.5);
+
+  const eE = Number(event.energy ?? event.energy_vector ?? 0.5);
+  const eS = Number(event.social ?? event.social_vector ?? 0.5);
+  const eN = Number(event.novelty ?? event.novelty_vector ?? 0.5);
+
+  // Squared 3D Euclidean distance: (ΔE)^2 + (ΔS)^2 + (ΔN)^2
+  const distSquared = (uE - eE) ** 2 + (uS - eS) ** 2 + (uN - eN) ** 2;
+
+  // Gaussian decay kernel (sigma = 0.5 provides strict penalties for single-axis variance)
+  const SIGMA = 0.5;
+  const similarityScore = Math.exp(-distSquared / (2 * (SIGMA ** 2)));
+
+  return Number(similarityScore.toFixed(4));
+};
+
 export default function App() {
   const [rawEvents, setRawEvents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -120,20 +149,15 @@ export default function App() {
   const rankedEvents = useMemo(() => {
     if (!rawEvents || rawEvents.length === 0) return [];
 
-    return [...rawEvents].sort((a, b) => {
-      const eA = a.energy ?? a.energy_vector ?? 0.5;
-      const sA = a.social ?? a.social_vector ?? 0.5;
-      const nA = a.novelty ?? a.novelty_vector ?? 0.5;
-
-      const eB = b.energy ?? b.energy_vector ?? 0.5;
-      const sB = b.social ?? b.social_vector ?? 0.5;
-      const nB = b.novelty ?? b.novelty_vector ?? 0.5;
-
-      const distA = Math.hypot(mood.energy - eA, mood.social - sA, mood.novelty - nA);
-      const distB = Math.hypot(mood.energy - eB, mood.social - sB, mood.novelty - nB);
-
-      return distA - distB;
-    });
+    return [...rawEvents]
+      .map((event) => {
+        const matchScore = calculateEuclideanSimilarity(mood, event);
+        return {
+          ...event,
+          matchScore, // Expose matchScore (0.0000 to 1.0000) for SwipeCard UI usage
+        };
+      })
+      .sort((a, b) => b.matchScore - a.matchScore); // Rank highest similarity first
   }, [rawEvents, mood]);
 
   const handleInteraction = useCallback((type, event) => {

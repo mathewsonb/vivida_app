@@ -36,24 +36,32 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
 
   const activeEvent = events[0];
 
-  const calculateMatchScore = (eVector) => {
-    if (!eVector) return 50;
-    const e = eVector.energy ?? eVector.energy_vector ?? 0.5;
-    const s = eVector.social ?? eVector.social_vector ?? 0.5;
-    const n = eVector.novelty ?? eVector.novelty_vector ?? 0.5;
+  // Derive match score percentage from passed matchScore (0.0 to 1.0) or calculate fallback
+  const currentMatchScore = (() => {
+    if (typeof activeEvent.matchScore === 'number') {
+      return Math.round(activeEvent.matchScore * 100);
+    }
+    const e = activeEvent.energy ?? activeEvent.energy_vector ?? 0.5;
+    const s = activeEvent.social ?? activeEvent.social_vector ?? 0.5;
+    const n = activeEvent.novelty ?? activeEvent.novelty_vector ?? 0.5;
 
     const moodEnergy = mood?.energy ?? 0.5;
     const moodSocial = mood?.social ?? 0.5;
     const moodNovelty = mood?.novelty ?? 0.5;
 
-    const dE = moodEnergy - e;
-    const dS = moodSocial - s;
-    const dN = moodNovelty - n;
-    const distance = Math.sqrt(dE * dE + dS * dS + dN * dN);
-    return Math.max(0, Math.min(100, Math.round((1 - distance / Math.sqrt(3)) * 100)));
-  };
+    const distSquared = (moodEnergy - e) ** 2 + (moodSocial - s) ** 2 + (moodNovelty - n) ** 2;
+    const similarity = Math.exp(-distSquared / (2 * (0.5 ** 2)));
+    return Math.round(similarity * 100);
+  })();
 
-  const currentMatchScore = calculateMatchScore(activeEvent);
+  const getBadgeStyle = (score) => {
+    if (score >= 85) {
+      return 'bg-emerald-600 text-white';
+    } else if (score >= 65) {
+      return 'bg-amber-600 text-white';
+    }
+    return 'bg-terracotta text-white';
+  };
 
   const x = useMotionValue(0);
   const y = useMotionValue(0);
@@ -76,7 +84,6 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
   const maybeBlur = useTransform(y, [0, -150], ["blur(10px)", "blur(0px)"]);
 
   const triggerSwipe = (action) => {
-    // Dispatch action directly to parent handler without duplicating recordSwipe calls
     if (action === 'not_my_scene') {
       animate(x, -350, { duration: 0.2 }).then(() => {
         onSwipe?.(action, activeEvent);
@@ -274,7 +281,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
                   <span className="text-[11px] font-semibold uppercase tracking-wider bg-black/50 backdrop-blur-md text-white px-2.5 py-1 rounded-full border border-white/20">
                     {activeEvent.category || 'Local Experience'}
                   </span>
-                  <div className="flex items-center gap-1 bg-terracotta text-white px-2.5 py-1 rounded-full text-xs font-bold shadow-md">
+                  <div className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold shadow-md transition-colors ${getBadgeStyle(currentMatchScore)}`}>
                     <Flame className="w-3.5 h-3.5 fill-white" />
                     {currentMatchScore}% Match
                   </div>
