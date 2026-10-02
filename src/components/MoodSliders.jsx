@@ -1,12 +1,28 @@
 import React from 'react';
 import { Zap, Users, Compass } from 'lucide-react';
+import { setCurrentMood } from '../services/historyService';
 
-export default function MoodSliders({ mood, onChange }) {
+export default function MoodSliders({ mood = {}, onChange }) {
+  // Ensure we fall back to defaults if mood keys are undefined/empty
+  const safeMood = {
+    energy: mood?.energy ?? 0.5,
+    social: mood?.social ?? 0.5,
+    novelty: mood?.novelty ?? 0.5,
+  };
+
   const handleSliderChange = (key, value) => {
-    onChange({
-      ...mood,
+    const updated = {
+      ...safeMood,
       [key]: parseFloat(value)
-    });
+    };
+
+    // 1. Sync directly to LocalStorage / historyService state
+    setCurrentMood(updated);
+
+    // 2. Notify parent component to update local React state
+    if (onChange) {
+      onChange(updated);
+    }
   };
 
   return (
@@ -21,7 +37,7 @@ export default function MoodSliders({ mood, onChange }) {
             <Zap className="w-3.5 h-3.5 text-amber-600" /> Energy
           </span>
           <span className="text-parchment-800/70 text-[11px]">
-            {mood.energy < 0.4 ? 'Chill & Mellow' : mood.energy > 0.7 ? 'High Energy' : 'Balanced'}
+            {safeMood.energy < 0.4 ? 'Chill & Mellow' : safeMood.energy > 0.7 ? 'High Energy' : 'Balanced'}
           </span>
         </div>
         <input
@@ -29,7 +45,7 @@ export default function MoodSliders({ mood, onChange }) {
           min="0"
           max="1"
           step="0.05"
-          value={mood.energy}
+          value={safeMood.energy}
           onChange={(e) => handleSliderChange('energy', e.target.value)}
           className="w-full h-1.5 bg-parchment-200/80 rounded-lg appearance-none cursor-pointer accent-terracotta touch-none"
         />
@@ -42,7 +58,7 @@ export default function MoodSliders({ mood, onChange }) {
             <Users className="w-3.5 h-3.5 text-emerald-600" /> Social
           </span>
           <span className="text-parchment-800/70 text-[11px]">
-            {mood.social < 0.4 ? 'Intimate / Solo' : mood.social > 0.7 ? 'Party / Crowd' : 'Small Group'}
+            {safeMood.social < 0.4 ? 'Intimate / Solo' : safeMood.social > 0.7 ? 'Party / Crowd' : 'Small Group'}
           </span>
         </div>
         <input
@@ -50,7 +66,7 @@ export default function MoodSliders({ mood, onChange }) {
           min="0"
           max="1"
           step="0.05"
-          value={mood.social}
+          value={safeMood.social}
           onChange={(e) => handleSliderChange('social', e.target.value)}
           className="w-full h-1.5 bg-parchment-200/80 rounded-lg appearance-none cursor-pointer accent-terracotta touch-none"
         />
@@ -63,7 +79,7 @@ export default function MoodSliders({ mood, onChange }) {
             <Compass className="w-3.5 h-3.5 text-indigo-600" /> Novelty
           </span>
           <span className="text-parchment-800/70 text-[11px]">
-            {mood.novelty < 0.4 ? 'Classic / Familiar' : mood.novelty > 0.7 ? 'Experimental' : 'Fresh'}
+            {safeMood.novelty < 0.4 ? 'Classic / Familiar' : safeMood.novelty > 0.7 ? 'Experimental' : 'Fresh'}
           </span>
         </div>
         <input
@@ -71,7 +87,7 @@ export default function MoodSliders({ mood, onChange }) {
           min="0"
           max="1"
           step="0.05"
-          value={mood.novelty}
+          value={safeMood.novelty}
           onChange={(e) => handleSliderChange('novelty', e.target.value)}
           className="w-full h-1.5 bg-parchment-200/80 rounded-lg appearance-none cursor-pointer accent-terracotta touch-none"
         />

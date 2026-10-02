@@ -5,6 +5,8 @@ import SwipeDeck from './components/SwipeDeck';
 import EmailPromptModal from './components/EmailPromptModal';
 import { ThumbsDown, Heart, Flame, Sparkles } from 'lucide-react';
 import HistoryPage from './components/HistoryPage';
+import { getCurrentMood, recordSwipe, setCurrentMood, applyVectorDrift } from './services/historyService';
+import { getOrCreateClientId } from './utils/session';
 
 export default function App() {
   const [rawEvents, setRawEvents] = useState([]);
@@ -12,9 +14,8 @@ export default function App() {
   const [sessionKey, setSessionKey] = useState('');
   const [userHash, setUserHash] = useState(null);
   const [currentView, setCurrentView] = useState('deck'); // 'deck' | 'history'
-
   const [isInitialPromptOpen, setIsInitialPromptOpen] = useState(false);
-  
+
   const [bookmarks, setBookmarks] = useState(() => {
     try {
       const saved = localStorage.getItem('vivida_bookmarks');
@@ -24,11 +25,13 @@ export default function App() {
     }
   });
 
-  const [mood, setMood] = useState({
-    energy: 0.5,
-    social: 0.5,
-    novelty: 0.5,
-  });
+  const [mood, setMood] = useState(() => getCurrentMood());
+
+  // Keep LocalStorage synchronized when user manually moves sliders via Header/MoodSliders
+  const handleMoodChange = useCallback((newMood) => {
+    const updated = setCurrentMood(newMood);
+    setMood(updated);
+  }, []);
 
   useEffect(() => {
     try {
@@ -39,11 +42,7 @@ export default function App() {
   }, [bookmarks]);
 
   useEffect(() => {
-    let activeKey = localStorage.getItem('vivida_session_key');
-    if (!activeKey) {
-      activeKey = crypto.randomUUID();
-      localStorage.setItem('vivida_session_key', activeKey);
-    }
+    const activeKey = getOrCreateClientId();
     setSessionKey(activeKey);
 
     const storedHash = localStorage.getItem('vivida_user_hash');
@@ -58,7 +57,6 @@ export default function App() {
 
   const extractDatesFromSchedule = (schedule) => {
     if (!schedule) return [];
-
     let parsed = schedule;
     if (typeof parsed === 'string') {
       try {
@@ -70,7 +68,6 @@ export default function App() {
     }
 
     const dates = [];
-
     if (Array.isArray(parsed)) {
       parsed.forEach((item) => {
         const val = item?.start_time || item?.date || item?.time;
@@ -83,13 +80,13 @@ export default function App() {
         Object.keys(parsed).forEach((k) => dates.push(k));
       }
     }
-
     return dates;
   };
 
   const fetchEvents = async () => {
     setLoading(true);
     try {
+      if (!supabase) return;
       const { data, error } = await supabase
         .from('events')
         .select('*')
@@ -102,7 +99,6 @@ export default function App() {
 
       const validEvents = (data || []).filter((event) => {
         if (!event.schedule) return true;
-
         const dateList = extractDatesFromSchedule(event.schedule);
         if (dateList.length === 0) return true;
 
@@ -140,13 +136,13 @@ export default function App() {
     });
   }, [rawEvents, mood]);
 
-  const handleInteraction = useCallback(async (type, event) => {
+  const handleInteraction = useCallback((type, event) => {
     if (!event) return;
 
-    // Remove event from current deck view
+    // 1. Remove event from active raw deck
     setRawEvents((prev) => prev.filter((e) => e.id !== event.id));
 
-    // Update bookmarks count for positive interactions
+    // 2. Track bookmarks if positive vibe action
     if (type === 'interested' || type === 'totally_vibe' || type === 'maybe_later') {
       setBookmarks((prev) => {
         if (prev.some((b) => b.id === event.id)) return prev;
@@ -154,43 +150,47 @@ export default function App() {
       });
     }
 
-    const payload = {
-      session_id: sessionKey,
-      email_hash: userHash || null,
-      event_id: event.id,
-      interaction_type: type,
-      target_energy: mood.energy,
-      target_social: mood.social,
-      target_novelty: mood.novelty,
-    };
+    // 3. Calculate new mood vector ONCE
+    const nextMood = applyVectorDrift(event, type, mood);
 
-    try {
-      await supabase.from('event_conversions').insert(payload);
-    } catch (err) {
-      console.error('Unexpected error recording interaction:', err);
+    // 4. Update UI State synchronously
+    setMood(nextMood);
+
+    // 5. Persist to storage & DB (pass nextMood so it doesn't re-calculate)
+    recordSwipe(type, event, null, nextMood);
+
+    if (supabase) {
+      supabase.from('event_conversions').insert({
+        session_id: sessionKey || 'anonymous_session',
+        email_hash: userHash || null,
+        event_id: event.id,
+        interaction_type: type,
+        target_energy: Number(nextMood.energy),
+        target_social: Number(nextMood.social),
+        target_novelty: Number(nextMood.novelty),
+      }).then(({ error }) => {
+        if (error) console.error('Error recording event conversion:', error.message);
+      }).catch((err) => console.error('Async conversion insert error:', err));
     }
   }, [sessionKey, userHash, mood]);
 
   const activeTopEvent = rankedEvents[0];
 
-  // Full page History view
   if (currentView === 'history') {
     return <HistoryPage onBack={() => setCurrentView('deck')} />;
   }
 
   return (
     <div className="h-dvh w-full bg-parchment-50 text-parchment-900 flex flex-col justify-between overflow-hidden pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
-      {/* Header - Unified History Route */}
       <Header 
         mood={mood}
-        onChangeMood={setMood}
+        onChangeMood={handleMoodChange}
         onOpenSaved={() => setCurrentView('history')}
         onOpenHistory={() => setCurrentView('history')}
         bookmarkCount={bookmarks.length}
         hasUserHash={!!userHash}
       />
 
-      {/* Main Container */}
       <main className="flex-1 w-full max-w-md mx-auto px-4 flex flex-col justify-between overflow-hidden py-2">
         <div className="flex-1 flex flex-col justify-center items-center overflow-hidden">
           {loading ? (
@@ -207,7 +207,6 @@ export default function App() {
           )}
         </div>
 
-        {/* Action Bar */}
         {!loading && activeTopEvent && (
           <div className="flex items-center justify-center gap-6 py-2 shrink-0">
             <button
@@ -237,7 +236,6 @@ export default function App() {
         )}
       </main>
 
-      {/* Email Prompt Modal */}
       {isInitialPromptOpen && (
         <EmailPromptModal
           isOpen={isInitialPromptOpen}

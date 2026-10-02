@@ -1,27 +1,31 @@
-// src/lib/tracking.js
 import { supabase } from './supabaseClient';
+import { getOrCreateClientId } from '../utils/session';
 
 /**
- * Tracks user interactions with events in Supabase.
- * @param {string} userHash - SHA-256 hash of the user's email/identifier
- * @param {string|number} eventId - ID of the event interacted with
- * @param {'not_my_scene' | 'maybe_later' | 'totally_vibe'} interactionType - Interaction outcome
+ * Non-blocking interaction tracking to Supabase.
  */
-export async function trackEventInteraction(userHash, eventId, interactionType) {
-  if (!userHash) return;
+export async function trackInteraction({ eventId, action, moodVector, userHash = null }) {
+  const clientId = getOrCreateClientId();
+  if (!clientId) {
+    console.warn('Skipping tracking: Client ID unavailable');
+    return;
+  }
+
+  const payload = {
+    client_id: clientId,
+    event_id: eventId,
+    action: action, // 'vibe', 'not_vibe', 'maybe'
+    mood_energy: moodVector?.energy ?? null,
+    mood_social: moodVector?.social ?? null,
+    mood_novelty: moodVector?.novelty ?? null,
+    user_hash: userHash,
+    created_at: new Date().toISOString()
+  };
 
   try {
-    const { error } = await supabase
-      .from('event_conversions')
-      .insert({
-        user_hash: userHash,
-        event_id: eventId,
-        interaction_type: interactionType,
-        created_at: new Date().toISOString()
-      });
-
+    const { error } = await supabase.from('interactions').insert([payload]);
     if (error) {
-      console.error('Error recording interaction:', error.message);
+      console.error('Supabase interaction tracking error:', error.message);
     }
   } catch (err) {
     console.error('Failed to log interaction:', err);
