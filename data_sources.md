@@ -23,7 +23,7 @@
 |Gig Harbor Events|[visitgigharbor.com](https://visitgigharbor.com/events-festivals/)|Community Sponsored|staged|
 |Foss Waterway Seaport|[fosswaterwayseaport.org](https://www.fosswaterwayseaport.org/visit-foss-waterway-seaport)|General Venue|staged|
 |Tacoma Creates|[tacomacreates.org](https://www.tacomacreates.org/events)|Community Sponsored|staged|
-|Tacoma City Theaters|[tacomacitytheaters.org](https://www.tacomacitytheaters.org/events)|General Venue|staged|
+|Tacoma City Theaters|[tacomacitytheaters.org](https://www.tacomacitytheaters.org/events)|General Venue|production|
 |Eventbrite|[eventbrite.com](https://www.eventbrite.com/d/wa--tacoma/events/)|Coordinator/ Broker|staged|
 |Tacoma Arts Live|[tacomaartslive.org](https://www.tacomaartslive.org/upcoming-events/)|General Venue|staged|
 |LeMay Car Museum|[americascarmuseum.org](https://www.americascarmuseum.org/events)|Museum or Attraction|assessment|
