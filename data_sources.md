@@ -17,9 +17,9 @@
 |LTD Presents|[ltdpresentslive.com](https://www.ltdpresentslive.com/)|Coordinator/ Broker|assessment|
 |Emerald Queen Casino|[emeraldqueen.com](https://emeraldqueen.com/tickets/)|Event Center|production|
 |Puyallup Fairgrounds|[thefair.com](https://www.thefair.com/events-calendar/)|Event Center|production|
-|McMenamins Elks Temple|[mcmenamins.com](https://www.mcmenamins.com/elks-temple/spanish-ballroom)|General Venue|staged|
+|McMenamins Elks Temple|[mcmenamins.com](https://www.mcmenamins.com/elks-temple/spanish-ballroom)|General Venue|production|
 |Tacoma Parks|[parkstacoma.gov](https://www.parkstacoma.gov/events/list/)|Community Sponsored|production|
-|Point Defiance Zoo and Aquarium|[pdza.org](https://www.pdza.org/events/)|Community Sponsored|staged|
+|Point Defiance Zoo and Aquarium|[pdza.org](https://www.pdza.org/events/)|Community Sponsored|production|
 |Gig Harbor Events|[visitgigharbor.com](https://visitgigharbor.com/events-festivals/)|Community Sponsored|staged|
 |Foss Waterway Seaport|[fosswaterwayseaport.org](https://www.fosswaterwayseaport.org/visit-foss-waterway-seaport)|General Venue|staged|
 |Tacoma Creates|[tacomacreates.org](https://www.tacomacreates.org/events)|Community Sponsored|staged|

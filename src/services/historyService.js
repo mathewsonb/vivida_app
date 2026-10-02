@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabaseClient';
 import { getOrCreateClientId } from '../utils/session';
 
 const SALT = import.meta.env.VITE_APP_SALT || 'vivida_privacy_salt_2025';
-const VECTOR_DRIFT_ALPHA = 0.1; // Learning rate
+const VECTOR_DRIFT_ALPHA = 0.3; // Learning rate
 const MOOD_STORAGE_KEY = 'vivida_user_mood_vector';
 const HISTORY_STORAGE_KEY = 'vibe_history';
 
