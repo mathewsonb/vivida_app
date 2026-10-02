@@ -76,8 +76,7 @@ export function applyVectorDrift(eventVector, action, currentMood) {
   const weights = {
     'not_my_scene': -1.0,
     'maybe_later': 0.0,
-    'totally_vibe': 1.0,
-    'interested': 1.0
+    'totally_vibe': 1.0
   };
 
   const weight = weights[action] ?? 0.0;
