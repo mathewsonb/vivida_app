@@ -2,9 +2,24 @@
 import React from 'react';
 import { Calendar, MapPin, Sparkles, Flame, ExternalLink, Tag, Bookmark } from 'lucide-react';
 import { motion, useMotionValue, useTransform, AnimatePresence, animate } from 'framer-motion';
-import { recordSwipe } from '../services/historyService';
 
 const FALLBACK_IMAGE = "https://images.unsplash.com/photo-1492684223066-81342ee5ff30?auto=format&fit=crop&w=800&q=80";
+
+/**
+ * Sanitizes URLs to prevent XSS (e.g., javascript: URIs)
+ */
+function sanitizeUrl(url) {
+  if (!url || typeof url !== 'string') return '#';
+  try {
+    const parsed = new URL(url, window.location.origin);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed.href;
+    }
+  } catch (e) {
+    // Malformed URL fallback
+  }
+  return '#';
+}
 
 export default function SwipeDeck({ events, mood, onSwipe }) {
   if (!events || events.length === 0) {
@@ -60,17 +75,8 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
   const swipeMaybeOpacity = useTransform(y, [0, -150], [0, 1]);
   const maybeBlur = useTransform(y, [0, -150], ["blur(10px)", "blur(0px)"]);
 
-  // Dynamic vertical translation for overlays so they move up and out of frame uniformly
-  const overlayYOffset = useTransform([x, y], ([latestX, latestY]) => {
-    const activeDistance = Math.max(Math.abs(latestX), Math.abs(latestY));
-    // Translates upward as drag threshold is approached
-    return Math.min(0, -activeDistance * 0.4);
-  });
-
   const triggerSwipe = (action) => {
-    // Log swipe action to Supabase & LocalStorage
-    recordSwipe(action, activeEvent);
-
+    // Dispatch action directly to parent handler without duplicating recordSwipe calls
     if (action === 'not_my_scene') {
       animate(x, -350, { duration: 0.2 }).then(() => {
         onSwipe?.(action, activeEvent);
@@ -162,7 +168,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
     if (Array.isArray(scheduleData)) {
       return scheduleData.map((item) => ({
         label: formatDates(item.start_time || item.date || item.time),
-        registerUrl: item.register || item.url || item.external_url || activeEvent.external_url || '#',
+        registerUrl: sanitizeUrl(item.register || item.url || item.external_url || activeEvent.external_url),
       }));
     }
 
@@ -170,13 +176,13 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
       if ('start_time' in scheduleData || 'register' in scheduleData || 'external_url' in scheduleData) {
         return [{
           label: formatDates(scheduleData.start_time),
-          registerUrl: scheduleData.register || scheduleData.external_url || activeEvent.external_url || '#',
+          registerUrl: sanitizeUrl(scheduleData.register || scheduleData.external_url || activeEvent.external_url),
         }];
       }
 
       return Object.entries(scheduleData).map(([key, value]) => ({
         label: formatDates(key),
-        registerUrl: typeof value === 'string' ? value : activeEvent.external_url || '#',
+        registerUrl: sanitizeUrl(typeof value === 'string' ? value : activeEvent.external_url),
       }));
     }
 
@@ -185,12 +191,12 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
 
   const venue = activeEvent.venue_name || activeEvent.venue || 'Local Venue';
   const mapUrl = activeEvent.latitude && activeEvent.longitude 
-    ? `https://www.google.com/maps/search/?api=1&query=${activeEvent.latitude},${activeEvent.longitude}`
-    : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(venue + ' ' + (activeEvent.address || 'Tacoma, WA'))}`;
+    ? sanitizeUrl(`https://www.google.com/maps/search/?api=1&query=${activeEvent.latitude},${activeEvent.longitude}`)
+    : sanitizeUrl(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(venue + ' ' + (activeEvent.address || 'Tacoma, WA'))}`);
 
   return (
     <div className="relative w-full max-w-md mx-auto my-auto pt-8">
-      {/* FIXED UNIFORM HOVERING BADGES (OUTSIDE THE ROTATING CARD FRAME) */}
+      {/* TOTALLY MY VIBE BADGE */}
       <motion.div 
         style={{ 
           x: "-50%",
@@ -249,7 +255,6 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
           onDragEnd={handleDragEnd}
           className="relative w-full h-[480px] sm:h-[520px] bg-white border border-parchment-200 rounded-3xl shadow-xl flex flex-col justify-between cursor-grab active:cursor-grabbing select-none overflow-hidden touch-pan-y transform-gpu"
         >
-          {/* CARD CONTENT */}
           <div className="flex-1 flex flex-col justify-between overflow-hidden pointer-events-none">
             <div>
               <div className="relative h-44 sm:h-48 w-full bg-parchment-100 overflow-hidden shrink-0">
@@ -288,7 +293,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
 
             <div className="px-5 pb-4 space-y-3">
               <div className="space-y-1.5 border-t border-parchment-100 pt-3 text-xs text-parchment-800">
-                {mapUrl && (
+                {mapUrl && mapUrl !== '#' && (
                   <a 
                     href={mapUrl}
                     target="_blank"

@@ -40,20 +40,36 @@ Built around the philosophy that you shouldn't have to navigate a complex direct
 ## 📁 Repository Structure
 
 ```text
+vivida_app/
 ├── .github/
-│   └── workflows/          # GitHub Actions cron jobs for scraper automation
+│   └── workflows/
+│       ├── deploy.yaml          # Actions workflow for GitHub Pages deployment
+│       └── ingest.yaml          # Scheduled daily Python ETL & Gemini vectorizer pipeline
 ├── src/
-│   ├── components/         # React components (SwipeDeck, MoodSliders, Modals)
-│   ├── hooks/              # Custom hooks for vector scoring & hash generation
-│   └── lib/                # Supabase client & crypto utilities
-├── scraper/
-│   ├── extractors/         # Site-specific & schema event scrapers
-│   ├── pipeline.py         # Deduplication & LLM vectorization scripts
-│   └── requirements.txt    # Python scraping dependencies
-├── supabase/
-│   └── migrations/         # PostgreSQL schema, RLS policies, and purge functions
-├── index.html              # Core application entrypoint
-└── README.md               # Project documentation
+│   ├── components/
+│   │   ├── EmailPromptModal.jsx # Client-side email hashing modal
+│   │   ├── Header.jsx           # App header with mood slider drawer toggle & counters
+│   │   ├── HistoryModal.jsx     # Saved history, event invite generator, & export modal
+│   │   ├── HistoryPage.jsx      # Full-page interactive selection history manager
+│   │   ├── MoodSliders.jsx      # Energy, Social, & Novelty control sliders
+│   │   ├── SwipeDeck.jsx        # Framer Motion card deck with swipe gestures
+│   │   └── UserHistoryReport.jsx# Dynamic Vibe Profile report & email digest trigger
+│   ├── hooks/
+│   │   └── useEmailHash.js      # Utility for generating salted SHA-256 hashes
+│   ├── lib/
+│   │   ├── crypto.js            # SHA-256 email hashing functions using Web Crypto API
+│   │   ├── supabaseClient.js    # Supabase JS client initializer
+│   │   └── tracking.js          # Direct event interaction logger for Supabase
+│   ├── services/
+│   │   └── historyService.js    # Vector drift calculations, local storage, & DB sync
+│   ├── utils/
+│   │   └── session.js           # Client ID generator/retriever
+│   ├── App.jsx                  # Main application orchestrator & state manager
+│   ├── index.css                # Tailwind CSS base styles & overscroll behavior
+│   └── main.jsx                 # React root DOM entrypoint
+├── index.html                   # HTML template & Web Font dependencies
+├── package-lock.json            # Lockfile detailing dependencies (React 19, Vite, Framer Motion)
+└── app-schema.txt               # Aggregated project code repository reference
 ```
 ---
 

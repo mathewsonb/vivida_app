@@ -197,18 +197,35 @@ export default function EmailPromptModal({ isOpen, onClose, onSuccess }) {
 ```
 
 src/components/Header.jsx = ```
+// src/components/Header.jsx
+
 import React, { useState, useEffect, useRef } from 'react';
-import { SlidersHorizontal, Bookmark, History, ChevronUp, Sparkles } from 'lucide-react';
+import { 
+  SlidersHorizontal, 
+  History, 
+  ChevronUp, 
+  Sparkles, 
+  Flame, 
+  Bookmark, 
+  UserCheck 
+} from 'lucide-react';
 import MoodSliders from './MoodSliders';
 
-export default function Header({ mood, onChangeMood, onOpenHistory, onOpenSaved, bookmarkCount, hasUserHash }) {
+export default function Header({ 
+  mood, 
+  onChangeMood, 
+  onOpenHistory, 
+  vibeCount = 0, 
+  savedCount = 0, 
+  hasUserHash = false 
+}) {
   const [isSlidersOpen, setIsSlidersOpen] = useState(false);
   const collapseTimeoutRef = useRef(null);
 
   const handleMoodChange = (newMood) => {
     onChangeMood(newMood);
 
-    // Auto-collapse after 2.5 seconds of inactivity
+    // Auto-collapse drawer after 2.5 seconds of inactivity
     if (collapseTimeoutRef.current) clearTimeout(collapseTimeoutRef.current);
     collapseTimeoutRef.current = setTimeout(() => {
       setIsSlidersOpen(false);
@@ -221,21 +238,32 @@ export default function Header({ mood, onChangeMood, onOpenHistory, onOpenSaved,
     };
   }, []);
 
+  const totalCount = vibeCount + savedCount;
+
   return (
     <header className="sticky top-0 z-40 bg-parchment-50/95 backdrop-blur-md border-b border-parchment-200 shadow-sm">
       <div className="max-w-md mx-auto px-4 py-3 flex items-center justify-between">
+        
         {/* Logo / Brand */}
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-xl bg-terracotta text-white flex items-center justify-center shadow-sm">
             <Sparkles className="w-4 h-4 fill-white" />
           </div>
-          <span className="font-serif font-bold text-lg tracking-tight text-parchment-900">
-            Vivida
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span className="font-serif font-bold text-lg tracking-tight text-parchment-900">
+              Vivida
+            </span>
+            {hasUserHash && (
+              <span title="Syncing across sessions" className="text-emerald-600">
+                <UserCheck className="w-3.5 h-3.5" />
+              </span>
+            )}
+          </div>
         </div>
 
         {/* Action Controls */}
         <div className="flex items-center gap-2">
+          
           {/* Mood Slider Toggle */}
           <button
             type="button"
@@ -255,35 +283,35 @@ export default function Header({ mood, onChangeMood, onOpenHistory, onOpenSaved,
             <span>Vibe</span>
           </button>
 
-          {/* Saved Events Button */}
-          <button
-            type="button"
-            onClick={(e) => {
-              e.preventDefault();
-              onOpenSaved();
-            }}
-            className="relative p-2 rounded-full bg-white border border-parchment-200 text-parchment-800 hover:bg-parchment-100 transition-colors"
-            title="Saved Events"
-          >
-            <Bookmark className="w-4 h-4" />
-            {bookmarkCount > 0 && (
-              <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-terracotta text-white text-[10px] font-bold flex items-center justify-center shadow-xs">
-                {bookmarkCount}
-              </span>
-            )}
-          </button>
-
-          {/* History Button */}
+          {/* Unified History Button with Separate Counter Badges */}
           <button
             type="button"
             onClick={(e) => {
               e.preventDefault();
               onOpenHistory();
             }}
-            className="p-2 rounded-full bg-white border border-parchment-200 text-parchment-800 hover:bg-parchment-100 transition-colors"
-            title="Interaction History"
+            className="relative p-2 rounded-full bg-white border border-parchment-200 text-parchment-800 hover:bg-parchment-100 transition-colors flex items-center gap-1"
+            title="Selection History"
           >
             <History className="w-4 h-4" />
+
+            {/* Separate Vibe & Saved Counter Badges */}
+            {totalCount > 0 && (
+              <div className="flex items-center gap-0.5 ml-0.5">
+                {vibeCount > 0 && (
+                  <span className="flex items-center gap-0.5 bg-emerald-600 text-white text-[10px] font-bold px-1.5 py-0.2 rounded-full">
+                    <Flame className="w-2.5 h-2.5 fill-current" />
+                    {vibeCount}
+                  </span>
+                )}
+                {savedCount > 0 && (
+                  <span className="flex items-center gap-0.5 bg-amber-600 text-white text-[10px] font-bold px-1.5 py-0.2 rounded-full">
+                    <Bookmark className="w-2.5 h-2.5 fill-current" />
+                    {savedCount}
+                  </span>
+                )}
+              </div>
+            )}
           </button>
         </div>
       </div>
@@ -576,16 +604,428 @@ export default function HistoryModal({
 }
 ```
 
+src/components/HistoryPage.jsx = ```
+// src/components/HistoryPage.jsx
+
+import React, { useState, useEffect } from 'react';
+import { 
+  Sparkles, 
+  MapPin, 
+  Calendar, 
+  Tag, 
+  ExternalLink, 
+  Share2, 
+  CheckSquare, 
+  Square, 
+  ArrowLeft, 
+  Flame, 
+  Bookmark, 
+  XCircle,
+  Copy,
+  Check
+} from 'lucide-react';
+import { getUserHistory } from '../services/historyService';
+
+const FALLBACK_IMAGE = "https://images.unsplash.com/photo-1492684223066-81342ee5ff30?auto=format&fit=crop&w=800&q=80";
+
+export default function HistoryPage({ onBack }) {
+  const [historyItems, setHistoryItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('totally_vibe'); // 'totally_vibe', 'maybe_later', 'not_my_scene'
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    async function loadData() {
+      setLoading(true);
+      const items = await getUserHistory();
+      setHistoryItems(items);
+      setLoading(false);
+    }
+    loadData();
+  }, []);
+
+  const filteredItems = historyItems.filter(item => item.action === activeTab);
+
+  // Toggle selection for batch actions
+  const toggleSelect = (id) => {
+    setSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  };
+
+  const selectAll = () => {
+    if (selectedIds.length === filteredItems.length) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(filteredItems.map(item => item.id));
+    }
+  };
+
+  // Helper to parse dates safely
+  const formatDates = (rawDateStr) => {
+    if (!rawDateStr) return 'Register';
+    const dateOptions = { month: 'short', day: 'numeric', year: 'numeric' };
+    const strVal = String(rawDateStr);
+
+    const parseLocal = (dStr) => {
+      const trimmed = dStr.trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+        return new Date(`${trimmed}T00:00:00`);
+      }
+      return new Date(trimmed);
+    };
+
+    if (strVal.includes(',')) {
+      const dates = strVal.split(',').map(d => parseLocal(d)).filter(d => !isNaN(d.getTime()));
+      if (dates.length >= 2) {
+        return `${dates[0].toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - ${dates[dates.length - 1].toLocaleDateString('en-US', dateOptions)}`;
+      } else if (dates.length === 1) {
+        return dates[0].toLocaleDateString('en-US', dateOptions);
+      }
+    }
+
+    const parsedDate = parseLocal(strVal);
+    return !isNaN(parsedDate.getTime()) ? parsedDate.toLocaleDateString('en-US', dateOptions) : strVal;
+  };
+
+  // Extract array of schedules
+  const getScheduleList = (event) => {
+    let raw = event?.schedule;
+    if (!raw) return [];
+    if (typeof raw === 'string') {
+      try {
+        raw = JSON.parse(raw);
+        if (typeof raw === 'string') raw = JSON.parse(raw);
+      } catch (err) {
+        return [];
+      }
+    }
+    if (Array.isArray(raw)) {
+      return raw.map(i => ({
+        label: formatDates(i.start_time || i.date || i.time),
+        url: i.register || i.url || i.external_url || event.external_url || '#'
+      }));
+    }
+    if (typeof raw === 'object' && raw !== null) {
+      if ('start_time' in raw || 'register' in raw) {
+        return [{ label: formatDates(raw.start_time), url: raw.register || event.external_url || '#' }];
+      }
+      return Object.entries(raw).map(([key, value]) => ({
+        label: formatDates(key),
+        url: typeof value === 'string' ? value : event.external_url || '#'
+      }));
+    }
+    return [];
+  };
+
+  // Generate share payload string
+  const formatShareText = (itemsToShare) => {
+    let text = "🎉 Check out these local event vibes I found!\n\n";
+    itemsToShare.forEach((item, index) => {
+      const ev = item.events || {};
+      const venue = ev.venue_name || ev.venue || 'Local Venue';
+      const schedules = getScheduleList(ev);
+      const mainLink = schedules[0]?.url || ev.external_url || '';
+
+      text += `${index + 1}. ${ev.title || 'Event'}\n`;
+      text += `📍 ${venue}${ev.address ? ` (${ev.address})` : ''}\n`;
+      if (mainLink) text += `🔗 ${mainLink}\n`;
+      text += `\n`;
+    });
+    return text.trim();
+  };
+
+  // Share handler (Web Share API or Clipboard Fallback)
+  const handleShare = async (specificItem = null) => {
+    const itemsToShare = specificItem 
+      ? [specificItem] 
+      : historyItems.filter(item => selectedIds.includes(item.id));
+
+    if (itemsToShare.length === 0) return;
+
+    const shareText = formatShareText(itemsToShare);
+
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: 'Local Vibes Selections',
+          text: shareText
+        });
+      } catch (err) {
+        if (err.name !== 'AbortError') console.error('Error sharing:', err);
+      }
+    } else {
+      // Clipboard fallback
+      try {
+        await navigator.clipboard.writeText(shareText);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch (err) {
+        console.error('Clipboard write failed:', err);
+      }
+    }
+  };
+
+  return (
+    <div className="h-dvh w-full bg-parchment-50 text-parchment-900 flex flex-col overflow-hidden pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
+      
+      {/* FIXED HEADER BAR */}
+      <header className="shrink-0 px-4 pt-4 pb-3 border-b border-parchment-200 bg-parchment-50">
+        <div className="max-w-3xl mx-auto flex items-center justify-between">
+          <button 
+            onClick={onBack}
+            className="flex items-center gap-2 text-sm font-semibold text-parchment-700 hover:text-terracotta transition-colors"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>Back to Deck</span>
+          </button>
+          <h1 className="font-serif text-lg sm:text-xl font-bold text-parchment-900">Your Selection History</h1>
+          <div className="w-12 sm:w-20" /> {/* Spacer */}
+        </div>
+      </header>
+
+      {/* SCROLLABLE MAIN BODY */}
+      <main className="flex-1 overflow-y-auto min-h-0 px-4 sm:px-6 py-4">
+        <div className="max-w-3xl mx-auto space-y-4 pb-8">
+          
+          {/* TAB FILTER CONTROL */}
+          <div className="flex items-center justify-between gap-2 bg-parchment-100 p-1.5 rounded-2xl border border-parchment-200">
+            <button
+              onClick={() => { setActiveTab('totally_vibe'); setSelectedIds([]); }}
+              className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-bold transition-all ${
+                activeTab === 'totally_vibe' 
+                  ? 'bg-emerald-600 text-white shadow-md' 
+                  : 'text-parchment-700 hover:bg-parchment-200/60'
+              }`}
+            >
+              <Flame className="w-3.5 h-3.5" />
+              <span>Vibes</span>
+            </button>
+
+            <button
+              onClick={() => { setActiveTab('maybe_later'); setSelectedIds([]); }}
+              className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-bold transition-all ${
+                activeTab === 'maybe_later' 
+                  ? 'bg-amber-600 text-white shadow-md' 
+                  : 'text-parchment-700 hover:bg-parchment-200/60'
+              }`}
+            >
+              <Bookmark className="w-3.5 h-3.5 fill-current" />
+              <span>Saved</span>
+            </button>
+
+            <button
+              onClick={() => { setActiveTab('not_my_scene'); setSelectedIds([]); }}
+              className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-bold transition-all ${
+                activeTab === 'not_my_scene' 
+                  ? 'bg-rose-600 text-white shadow-md' 
+                  : 'text-parchment-700 hover:bg-parchment-200/60'
+              }`}
+            >
+              <XCircle className="w-3.5 h-3.5" />
+              <span>Passed</span>
+            </button>
+          </div>
+
+          {/* BATCH ACTION CONTROLS */}
+          {filteredItems.length > 0 && (
+            <div className="flex items-center justify-between bg-white px-4 py-2.5 rounded-2xl border border-parchment-200 shadow-sm text-xs font-medium text-parchment-800">
+              <button 
+                onClick={selectAll}
+                className="flex items-center gap-2 hover:text-terracotta transition-colors"
+              >
+                {selectedIds.length === filteredItems.length && filteredItems.length > 0 ? (
+                  <CheckSquare className="w-4 h-4 text-terracotta" />
+                ) : (
+                  <Square className="w-4 h-4 text-parchment-400" />
+                )}
+                <span>Select All ({filteredItems.length})</span>
+              </button>
+
+              {selectedIds.length > 0 && (
+                <button
+                  onClick={() => handleShare()}
+                  className="flex items-center gap-1.5 bg-terracotta text-white px-3 py-1.5 rounded-xl font-bold hover:bg-terracotta/90 transition-all shadow-sm"
+                >
+                  {copied ? <Check className="w-3.5 h-3.5" /> : <Share2 className="w-3.5 h-3.5" />}
+                  <span>{copied ? 'Copied Details!' : `Share Selected (${selectedIds.length})`}</span>
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* CARDS LIST */}
+          {loading ? (
+            <div className="py-20 text-center text-xs text-parchment-600 animate-pulse">
+              Loading your history...
+            </div>
+          ) : filteredItems.length === 0 ? (
+            <div className="py-16 bg-white rounded-3xl border border-dashed border-parchment-200 text-center p-6 space-y-2">
+              <Sparkles className="w-8 h-8 text-terracotta/40 mx-auto" />
+              <h3 className="font-serif font-bold text-parchment-900">No events saved under this vibe yet</h3>
+              <p className="text-xs text-parchment-700 max-w-xs mx-auto">
+                Head back to the deck to start exploring and picking your local vibes.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {filteredItems.map(item => {
+                const event = item.events || {};
+                const schedules = getScheduleList(event);
+                const venue = event.venue_name || event.venue || 'Local Venue';
+                const isSelected = selectedIds.includes(item.id);
+
+                const mapUrl = event.latitude && event.longitude 
+                  ? `https://www.google.com/maps/search/?api=1&query=${event.latitude},${event.longitude}`
+                  : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(venue + ' ' + (event.address || 'Tacoma, WA'))}`;
+
+                return (
+                  <div 
+                    key={item.id}
+                    className={`relative bg-white rounded-3xl border transition-all shadow-md overflow-hidden flex flex-col md:flex-row ${
+                      isSelected ? 'border-terracotta ring-1 ring-terracotta' : 'border-parchment-200'
+                    }`}
+                  >
+                    {/* SELECTION CHECKBOX */}
+                    <button
+                      onClick={() => toggleSelect(item.id)}
+                      className="absolute top-3 left-3 z-20 bg-white/90 backdrop-blur-md p-1.5 rounded-xl border border-parchment-200 shadow-sm"
+                    >
+                      {isSelected ? (
+                        <CheckSquare className="w-4 h-4 text-terracotta" />
+                      ) : (
+                        <Square className="w-4 h-4 text-parchment-400" />
+                      )}
+                    </button>
+
+                    {/* IMAGE SIDE / HEADER */}
+                    <div className="relative h-48 md:h-auto md:w-56 shrink-0 bg-parchment-100 overflow-hidden">
+                      <img 
+                        src={event.image_url || FALLBACK_IMAGE} 
+                        alt={event.title || 'Event'} 
+                        className="w-full h-full object-cover"
+                        onError={(e) => { e.target.onerror = null; e.target.src = FALLBACK_IMAGE; }}
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent md:hidden" />
+                      
+                      <span className="absolute bottom-3 left-3 text-[10px] font-bold uppercase tracking-wider bg-black/60 text-white px-2 py-0.5 rounded-full border border-white/20 backdrop-blur-md">
+                        {event.category || 'Experience'}
+                      </span>
+                    </div>
+
+                    {/* DETAILS CONTENT */}
+                    <div className="p-5 flex-1 flex flex-col justify-between space-y-4">
+                      <div className="space-y-2">
+                        <div className="flex items-start justify-between gap-3">
+                          <h3 className="font-serif font-bold text-lg text-parchment-900 leading-tight">
+                            {event.title}
+                          </h3>
+
+                          {/* SINGLE ITEM SHARE BUTTON */}
+                          <button
+                            onClick={() => handleShare(item)}
+                            className="shrink-0 p-2 text-parchment-600 hover:text-terracotta hover:bg-parchment-100 rounded-xl transition-colors"
+                            title="Share event details"
+                          >
+                            <Share2 className="w-4 h-4" />
+                          </button>
+                        </div>
+
+                        <p className="text-xs text-parchment-800 leading-relaxed">
+                          {event.description}
+                        </p>
+                      </div>
+
+                      {/* METADATA & SCHEDULE REDIRECTS */}
+                      <div className="space-y-3 pt-3 border-t border-parchment-100 text-xs">
+                        <div className="flex flex-wrap gap-y-1.5 gap-x-4 text-parchment-800">
+                          {mapUrl && (
+                            <a 
+                              href={mapUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-1.5 text-terracotta font-medium hover:underline truncate"
+                            >
+                              <MapPin className="w-3.5 h-3.5 shrink-0" />
+                              <span className="truncate">{venue} {event.address ? `• ${event.address}` : ''}</span>
+                            </a>
+                          )}
+
+                          {event.price_info && (
+                            <div className="flex items-center gap-1.5 text-parchment-700">
+                              <Tag className="w-3.5 h-3.5 text-terracotta shrink-0" />
+                              <span>{event.price_info}</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* DYNAMIC REGISTRATION LINKS */}
+                        <div className="space-y-1.5">
+                          <div className="flex items-center gap-1 text-[11px] font-medium text-parchment-700">
+                            <Calendar className="w-3.5 h-3.5 text-terracotta" />
+                            <span>Dates & Registration Links:</span>
+                          </div>
+
+                          <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
+                            {schedules.length > 0 ? (
+                              schedules.map((sched, idx) => (
+                                <a
+                                  key={idx}
+                                  href={sched.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="shrink-0 flex items-center gap-1 bg-parchment-100 hover:bg-terracotta hover:text-white text-parchment-900 border border-parchment-200 font-semibold py-1 px-2.5 rounded-xl text-xs transition-all shadow-sm"
+                                >
+                                  <span>{sched.label}</span>
+                                  <ExternalLink className="w-3 h-3 opacity-70" />
+                                </a>
+                              ))
+                            ) : (
+                              <span className="text-xs text-parchment-600 italic">No direct links available</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}
+```
+
 src/components/MoodSliders.jsx = ```
 import React from 'react';
 import { Zap, Users, Compass } from 'lucide-react';
+import { setCurrentMood } from '../services/historyService';
 
-export default function MoodSliders({ mood, onChange }) {
+export default function MoodSliders({ mood = {}, onChange }) {
+  // Ensure we fall back to defaults if mood keys are undefined/empty
+  const safeMood = {
+    energy: mood?.energy ?? 0.5,
+    social: mood?.social ?? 0.5,
+    novelty: mood?.novelty ?? 0.5,
+  };
+
   const handleSliderChange = (key, value) => {
-    onChange({
-      ...mood,
+    const updated = {
+      ...safeMood,
       [key]: parseFloat(value)
-    });
+    };
+
+    // 1. Sync directly to LocalStorage / historyService state
+    setCurrentMood(updated);
+
+    // 2. Notify parent component to update local React state
+    if (onChange) {
+      onChange(updated);
+    }
   };
 
   return (
@@ -600,7 +1040,7 @@ export default function MoodSliders({ mood, onChange }) {
             <Zap className="w-3.5 h-3.5 text-amber-600" /> Energy
           </span>
           <span className="text-parchment-800/70 text-[11px]">
-            {mood.energy < 0.4 ? 'Chill & Mellow' : mood.energy > 0.7 ? 'High Energy' : 'Balanced'}
+            {safeMood.energy < 0.4 ? 'Chill & Mellow' : safeMood.energy > 0.7 ? 'High Energy' : 'Balanced'}
           </span>
         </div>
         <input
@@ -608,7 +1048,7 @@ export default function MoodSliders({ mood, onChange }) {
           min="0"
           max="1"
           step="0.05"
-          value={mood.energy}
+          value={safeMood.energy}
           onChange={(e) => handleSliderChange('energy', e.target.value)}
           className="w-full h-1.5 bg-parchment-200/80 rounded-lg appearance-none cursor-pointer accent-terracotta touch-none"
         />
@@ -621,7 +1061,7 @@ export default function MoodSliders({ mood, onChange }) {
             <Users className="w-3.5 h-3.5 text-emerald-600" /> Social
           </span>
           <span className="text-parchment-800/70 text-[11px]">
-            {mood.social < 0.4 ? 'Intimate / Solo' : mood.social > 0.7 ? 'Party / Crowd' : 'Small Group'}
+            {safeMood.social < 0.4 ? 'Intimate / Solo' : safeMood.social > 0.7 ? 'Party / Crowd' : 'Small Group'}
           </span>
         </div>
         <input
@@ -629,7 +1069,7 @@ export default function MoodSliders({ mood, onChange }) {
           min="0"
           max="1"
           step="0.05"
-          value={mood.social}
+          value={safeMood.social}
           onChange={(e) => handleSliderChange('social', e.target.value)}
           className="w-full h-1.5 bg-parchment-200/80 rounded-lg appearance-none cursor-pointer accent-terracotta touch-none"
         />
@@ -642,7 +1082,7 @@ export default function MoodSliders({ mood, onChange }) {
             <Compass className="w-3.5 h-3.5 text-indigo-600" /> Novelty
           </span>
           <span className="text-parchment-800/70 text-[11px]">
-            {mood.novelty < 0.4 ? 'Classic / Familiar' : mood.novelty > 0.7 ? 'Experimental' : 'Fresh'}
+            {safeMood.novelty < 0.4 ? 'Classic / Familiar' : safeMood.novelty > 0.7 ? 'Experimental' : 'Fresh'}
           </span>
         </div>
         <input
@@ -650,7 +1090,7 @@ export default function MoodSliders({ mood, onChange }) {
           min="0"
           max="1"
           step="0.05"
-          value={mood.novelty}
+          value={safeMood.novelty}
           onChange={(e) => handleSliderChange('novelty', e.target.value)}
           className="w-full h-1.5 bg-parchment-200/80 rounded-lg appearance-none cursor-pointer accent-terracotta touch-none"
         />
@@ -661,16 +1101,18 @@ export default function MoodSliders({ mood, onChange }) {
 ```
 
 src/components/SwipeDeck.jsx = ```
+// src/components/SwipeDeck.jsx
 import React from 'react';
 import { Calendar, MapPin, Sparkles, Flame, ExternalLink, Tag, Bookmark } from 'lucide-react';
 import { motion, useMotionValue, useTransform, AnimatePresence, animate } from 'framer-motion';
+import { recordSwipe } from '../services/historyService';
 
 const FALLBACK_IMAGE = "https://images.unsplash.com/photo-1492684223066-81342ee5ff30?auto=format&fit=crop&w=800&q=80";
 
 export default function SwipeDeck({ events, mood, onSwipe }) {
   if (!events || events.length === 0) {
     return (
-      <div className="h-96 rounded-3xl border-2 border-dashed border-parchment-200 flex flex-col items-center justify-center p-6 text-center bg-parchment-100/50">
+      <div className="h-80 rounded-3xl border-2 border-dashed border-parchment-200 flex flex-col items-center justify-center p-6 text-center bg-parchment-100/50">
         <Sparkles className="w-10 h-10 text-terracotta/40 mb-3" />
         <h3 className="font-serif text-lg font-bold text-parchment-900">You've explored all local vibes</h3>
         <p className="text-xs text-parchment-800 mt-1 max-w-xs">
@@ -682,7 +1124,6 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
 
   const activeEvent = events[0];
 
-  // Calculate Match Score
   const calculateMatchScore = (eVector) => {
     if (!eVector) return 50;
     const e = eVector.energy ?? eVector.energy_vector ?? 0.5;
@@ -702,64 +1143,85 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
 
   const currentMatchScore = calculateMatchScore(activeEvent);
 
-  // Motion Values for Gestures
   const x = useMotionValue(0);
   const y = useMotionValue(0);
 
-  const rotate = useTransform(x, [-200, 200], [-15, 15]);
-  const opacity = useTransform(
-    [x, y],
-    ([latestX, latestY]) => {
-      const distance = Math.sqrt(latestX * latestX + latestY * latestY);
-      return Math.max(0, 1 - distance / 350);
-    }
-  );
+  const rotate = useTransform(x, [-200, 200], [-12, 12]);
+  
+  // 1:1 Sync with Left Drag (Not My Scene)
+  const rejectScale = useTransform(x, [0, -150], [1, 2]);
+  const swipeRejectOpacity = useTransform(x, [0, -150], [0, 1]);
+  const rejectBlur = useTransform(x, [0, -150], ["blur(10px)", "blur(0px)"]);
 
-  // Swipe Visual Overlay Opacities
-  const swipeRejectOpacity = useTransform(x, [-60, -15], [1, 0]);
-  const swipeVibeOpacity = useTransform(x, [15, 60], [0, 1]);
-  const swipeMaybeOpacity = useTransform(y, [-60, -15], [1, 0]);
+  // 1:1 Sync with Right Drag (Totally My Vibe)
+  const vibeScale = useTransform(x, [0, 150], [1, 2]);
+  const swipeVibeOpacity = useTransform(x, [0, 150], [0, 1]);
+  const vibeBlur = useTransform(x, [0, 150], ["blur(10px)", "blur(0px)"]);
+
+  // 1:1 Sync with Upward Drag (Maybe Later)
+  const maybeScale = useTransform(y, [0, -150], [1, 2]);
+  const swipeMaybeOpacity = useTransform(y, [0, -150], [0, 1]);
+  const maybeBlur = useTransform(y, [0, -150], ["blur(10px)", "blur(0px)"]);
+
+  // Dynamic vertical translation for overlays so they move up and out of frame uniformly
+  const overlayYOffset = useTransform([x, y], ([latestX, latestY]) => {
+    const activeDistance = Math.max(Math.abs(latestX), Math.abs(latestY));
+    // Translates upward as drag threshold is approached
+    return Math.min(0, -activeDistance * 0.4);
+  });
+
+  const triggerSwipe = (action) => {
+    // Log swipe action to Supabase & LocalStorage
+    recordSwipe(action, activeEvent);
+
+    if (action === 'not_my_scene') {
+      animate(x, -350, { duration: 0.2 }).then(() => {
+        onSwipe?.(action, activeEvent);
+        x.set(0);
+        y.set(0);
+      });
+    } else if (action === 'totally_vibe') {
+      animate(x, 350, { duration: 0.2 }).then(() => {
+        onSwipe?.(action, activeEvent);
+        x.set(0);
+        y.set(0);
+      });
+    } else if (action === 'maybe_later') {
+      animate(y, -350, { duration: 0.2 }).then(() => {
+        onSwipe?.(action, activeEvent);
+        x.set(0);
+        y.set(0);
+      });
+    }
+  };
 
   const handleDragEnd = (e, info) => {
     const offsetX = info.offset.x;
     const offsetY = info.offset.y;
 
-    if (offsetY < -100 && Math.abs(offsetY) > Math.abs(offsetX)) {
-      onSwipe?.('maybe_later', activeEvent);
-      x.set(0);
-      y.set(0);
-    } else if (offsetX > 100) {
-      onSwipe?.('totally_vibe', activeEvent);
-      x.set(0);
-      y.set(0);
-    } else if (offsetX < -100) {
-      onSwipe?.('not_my_scene', activeEvent);
-      x.set(0);
-      y.set(0);
+    if (offsetY < -50 && Math.abs(offsetY) > Math.abs(offsetX) * 0.6) {
+      triggerSwipe('maybe_later');
+    } else if (offsetX > 80) {
+      triggerSwipe('totally_vibe');
+    } else if (offsetX < -80) {
+      triggerSwipe('not_my_scene');
     } else {
-      animate(x, 0, { type: 'spring', stiffness: 300, damping: 28 });
-      animate(y, 0, { type: 'spring', stiffness: 300, damping: 28 });
+      animate(x, 0, { type: 'spring', stiffness: 300, damping: 25 });
+      animate(y, 0, { type: 'spring', stiffness: 300, damping: 25 });
     }
   };
 
-  /**
-   * FLEXIBLE SCHEDULE PARSER:
-   * Handles stringified JSON, arrays, single dicts, and date-keyed dicts cleanly.
-   */
   const parsedSchedule = (() => {
     let scheduleData = activeEvent?.schedule;
-
     if (!scheduleData) return [];
 
     if (typeof scheduleData === 'string') {
       try {
         scheduleData = JSON.parse(scheduleData);
-        // Step 1 Safety: Un-escape double-stringified output from Python json.dumps in TEXT columns
         if (typeof scheduleData === 'string') {
           scheduleData = JSON.parse(scheduleData);
         }
       } catch (err) {
-        console.warn('Failed to parse schedule JSON:', err);
         return [];
       }
     }
@@ -767,14 +1229,10 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
     const formatDates = (rawDateStr) => {
       if (!rawDateStr) return 'Register';
       const dateOptions = { month: 'short', day: 'numeric', year: 'numeric' };
-
-      // Step 2 Safety: Guard against non-string inputs
       const strVal = String(rawDateStr);
 
-      // Helper function to safely parse dates in local timezone
       const parseLocal = (dStr) => {
         const trimmed = dStr.trim();
-        // If it's a simple YYYY-MM-DD, append T00:00:00 to force local time parsing
         if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
           return new Date(`${trimmed}T00:00:00`);
         }
@@ -784,7 +1242,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
       if (strVal.includes(',')) {
         const dates = strVal
           .split(',')
-          .map((d) => new Date(d.trim()))
+          .map((d) => parseLocal(d))
           .filter((d) => !isNaN(d.getTime()));
 
         if (dates.length >= 2) {
@@ -804,7 +1262,6 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
       return strVal;
     };
 
-    // Case 1: Array of items
     if (Array.isArray(scheduleData)) {
       return scheduleData.map((item) => ({
         label: formatDates(item.start_time || item.date || item.time),
@@ -812,9 +1269,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
       }));
     }
 
-    // Case 2 & 3: JSON Object
     if (typeof scheduleData === 'object' && scheduleData !== null) {
-      // Direct {"start_time": "...", "register": "..."} format from raw dump
       if ('start_time' in scheduleData || 'register' in scheduleData || 'external_url' in scheduleData) {
         return [{
           label: formatDates(scheduleData.start_time),
@@ -822,7 +1277,6 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
         }];
       }
 
-      // Date-keyed object: {"YYYY-MM-DD": "url"}
       return Object.entries(scheduleData).map(([key, value]) => ({
         label: formatDates(key),
         registerUrl: typeof value === 'string' ? value : activeEvent.external_url || '#',
@@ -838,66 +1292,83 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
     : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(venue + ' ' + (activeEvent.address || 'Tacoma, WA'))}`;
 
   return (
-    <div className="relative w-full max-w-md mx-auto min-h-[480px] my-auto">
+    <div className="relative w-full max-w-md mx-auto my-auto pt-8">
+      {/* FIXED UNIFORM HOVERING BADGES (OUTSIDE THE ROTATING CARD FRAME) */}
+      <motion.div 
+        style={{ 
+          x: "-50%",
+          y: "-50%",
+          scale: vibeScale, 
+          opacity: swipeVibeOpacity,
+          filter: vibeBlur 
+        }}
+        className="absolute top-1/2 left-1/2 border-[3px] border-emerald-600 text-emerald-600 font-black tracking-widest px-4 py-1.5 rounded-2xl pointer-events-none z-30 bg-white/95 shadow-2xl text-xs uppercase flex items-center gap-2 whitespace-nowrap transform-gpu origin-center"
+      >
+        TOTALLY MY VIBE
+      </motion.div>
+
+      {/* NOT MY SCENE BADGE */}
+      <motion.div 
+        style={{ 
+          x: "-50%",
+          y: "-50%",
+          scale: rejectScale, 
+          opacity: swipeRejectOpacity,
+          filter: rejectBlur 
+        }}
+        className="absolute top-1/2 left-1/2 border-[3px] border-rose-600 text-rose-600 font-black tracking-widest px-4 py-1.5 rounded-2xl pointer-events-none z-30 bg-white/95 shadow-2xl text-xs uppercase flex items-center gap-2 whitespace-nowrap transform-gpu origin-center"
+      >
+        NOT MY SCENE
+      </motion.div>
+
+      {/* MAYBE LATER BADGE */}
+      <motion.div 
+        style={{ 
+          x: "-50%",
+          y: "-50%",
+          scale: maybeScale, 
+          opacity: swipeMaybeOpacity,
+          filter: maybeBlur 
+        }}
+        className="absolute top-1/2 left-1/2 border-[3px] border-amber-600 text-amber-600 font-black tracking-widest px-4 py-1.5 rounded-2xl pointer-events-none z-30 bg-white/95 shadow-2xl text-xs uppercase flex items-center gap-2 whitespace-nowrap transform-gpu origin-center"
+      >
+        <Bookmark className="w-4 h-4 fill-amber-600 stroke-[2.5]" />
+        MAYBE LATER
+      </motion.div>
+
+      {/* INTERACTIVE SWIPE CARD */}
       <AnimatePresence mode="wait">
         <motion.div
           key={activeEvent.id || activeEvent.title || 'active-card'}
           initial={{ scale: 0.95, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           exit={{ scale: 0.95, opacity: 0 }}
-          transition={{
-            type: "spring",
-            stiffness: 300,
-            damping: 28,
-            mass: 0.8,
-          }}
-          style={{ x, y, rotate, opacity }}
+          transition={{ type: "spring", stiffness: 300, damping: 25 }}
+          style={{ x, y, rotate }}
           drag
           dragDirectionLock
-          dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
+          dragSnapToOrigin
+          dragElastic={0.6}
           onDragEnd={handleDragEnd}
-          className="relative w-full min-h-[460px] max-h-[600px] bg-white border border-parchment-200 rounded-3xl shadow-xl flex flex-col justify-between cursor-grab active:cursor-grabbing select-none overflow-hidden transform-gpu will-change-transform"
+          className="relative w-full h-[480px] sm:h-[520px] bg-white border border-parchment-200 rounded-3xl shadow-xl flex flex-col justify-between cursor-grab active:cursor-grabbing select-none overflow-hidden touch-pan-y transform-gpu"
         >
-          {/* SWIPE OVERLAY INDICATORS */}
-          <motion.div
-            style={{ opacity: swipeVibeOpacity }}
-            className="absolute top-4 right-4 border-[3.5px] border-emerald-600 text-emerald-600 font-black tracking-widest px-4 py-1.5 rounded-2xl rotate-12 pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-base uppercase drop-shadow-md flex items-center gap-2"
-          >
-            TOTALLY MY VIBE
-          </motion.div>
-
-          <motion.div
-            style={{ opacity: swipeRejectOpacity }}
-            className="absolute top-4 left-4 border-[3.5px] border-rose-600 text-rose-600 font-black tracking-widest px-4 py-1.5 rounded-2xl -rotate-12 pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-base uppercase drop-shadow-md flex items-center gap-2"
-          >
-            NOT MY SCENE
-          </motion.div>
-
-          <motion.div
-            style={{ opacity: swipeMaybeOpacity }}
-            className="absolute top-4 left-1/2 -translate-x-1/2 border-[3.5px] border-amber-600 text-amber-600 font-black tracking-widest px-4 py-1.5 rounded-2xl rotate-0 pointer-events-none z-30 bg-white/95 backdrop-blur-md shadow-2xl text-base uppercase drop-shadow-md flex items-center gap-2"
-          >
-            <Bookmark className="w-5 h-5 fill-amber-600 stroke-[2.5]" />
-            MAYBE LATER
-          </motion.div>
-
-          {/* CARD BODY CONTENT */}
-          <div className="flex-1 flex flex-col justify-between overflow-y-auto no-scrollbar">
-            {/* TOP SECTION: IMAGE HEADER & BADGES */}
+          {/* CARD CONTENT */}
+          <div className="flex-1 flex flex-col justify-between overflow-hidden pointer-events-none">
             <div>
-              <div className="relative h-44 w-full bg-parchment-100 overflow-hidden shrink-0">
+              <div className="relative h-44 sm:h-48 w-full bg-parchment-100 overflow-hidden shrink-0">
                 <img
                   src={activeEvent.image_url || FALLBACK_IMAGE}
                   alt={activeEvent.title || 'Event image'}
+                  referrerPolicy='no-referrer'
                   onError={(e) => {
                     e.target.onerror = null;
                     e.target.src = FALLBACK_IMAGE;
                   }}
-                  className="w-full h-full object-cover"
+                  className="w-full h-full object-cover pointer-events-none"
                 />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20" />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20 pointer-events-none" />
 
-                <div className="absolute top-4 left-4 right-4 flex justify-between items-center z-10">
+                <div className="absolute top-4 left-4 right-4 flex justify-between items-center z-10 pointer-events-none">
                   <span className="text-[11px] font-semibold uppercase tracking-wider bg-black/50 backdrop-blur-md text-white px-2.5 py-1 rounded-full border border-white/20">
                     {activeEvent.category || 'Local Experience'}
                   </span>
@@ -908,8 +1379,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
                 </div>
               </div>
 
-              {/* EVENT DETAILS */}
-              <div className="p-5 sm:p-6 space-y-2">
+              <div className="p-5 space-y-2">
                 <h2 className="font-serif text-xl font-bold text-parchment-900 leading-tight">
                   {activeEvent.title}
                 </h2>
@@ -919,8 +1389,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
               </div>
             </div>
 
-            {/* BOTTOM METADATA & DYNAMIC SCHEDULE BUTTONS */}
-            <div className="px-5 pb-5 space-y-3">
+            <div className="px-5 pb-4 space-y-3">
               <div className="space-y-1.5 border-t border-parchment-100 pt-3 text-xs text-parchment-800">
                 {mapUrl && (
                   <a 
@@ -929,7 +1398,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
                     rel="noopener noreferrer"
                     onPointerDown={(e) => e.stopPropagation()}
                     onClick={(e) => e.stopPropagation()}
-                    className="flex items-center gap-2 text-terracotta font-medium hover:underline truncate"
+                    className="pointer-events-auto flex items-center gap-2 text-terracotta font-medium hover:underline truncate"
                   >
                     <MapPin className="w-4 h-4 shrink-0 text-terracotta" />
                     <span className="truncate">{venue} {activeEvent.address ? `• ${activeEvent.address}` : ''}</span>
@@ -944,7 +1413,6 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
                 )}
               </div>
 
-              {/* DYNAMIC REGISTRATION BUTTONS */}
               <div className="mt-2 space-y-1.5">
                 <div className="flex items-center gap-1.5 text-[11px] font-medium text-parchment-700">
                   <Calendar className="w-3.5 h-3.5 text-terracotta" />
@@ -952,7 +1420,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
                 </div>
 
                 <div 
-                  className="flex items-center gap-2 overflow-x-auto pb-1 pt-0.5 no-scrollbar"
+                  className="pointer-events-auto flex items-center gap-2 overflow-x-auto pb-1 pt-0.5 no-scrollbar touch-pan-x"
                   onPointerDown={(e) => e.stopPropagation()}
                 >
                   {parsedSchedule.length > 0 ? (
@@ -1298,24 +1766,273 @@ export async function trackEventInteraction(userHash, eventId, interactionType) 
 }
 ```
 
-App.jsx = ```
+src/services/historyService.js = ```
+// src/services/historyService.js
+import { supabase } from '../lib/supabaseClient';
+import { getOrCreateClientId } from '../utils/session';
+
+// Vite env variable access with fallback default salt
+const SALT = import.meta.env.VITE_APP_SALT || 'vivida_privacy_salt_2025';
+const VECTOR_DRIFT_ALPHA = 0.1; // Learning rate (step size)
+const MOOD_STORAGE_KEY = 'vivida_user_mood_vector';
+const HISTORY_STORAGE_KEY = 'vibe_history';
+
+// Default baseline mood vector
+const DEFAULT_MOOD = { energy: 0.5, social: 0.5, novelty: 0.5 };
+
+/**
+ * Client-side SHA-256 hash generator for email privacy
+ */
+export async function hashEmail(email) {
+  if (!email || !email.trim()) return null;
+  const encoder = new TextEncoder();
+  const data = encoder.encode(email.trim().toLowerCase() + SALT);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Reads and validates the current user mood vector directly from LocalStorage.
+ * Auto-populates defaults if undefined or missing keys.
+ */
+export function getCurrentMood() {
+  try {
+    const saved = localStorage.getItem(MOOD_STORAGE_KEY);
+    // console.log('Retrieved mood vector from LocalStorage:', saved);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+        return {
+          energy: parsed.energy ?? DEFAULT_MOOD.energy,
+          social: parsed.social ?? DEFAULT_MOOD.social,
+          novelty: parsed.novelty ?? DEFAULT_MOOD.novelty,
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to read mood vector from localStorage:', err);
+  }
+  return { ...DEFAULT_MOOD };
+}
+
+/**
+ * Persists an updated or initial mood vector to LocalStorage.
+ */
+export function setCurrentMood(newMood) {
+  const validMood = {
+    energy: newMood?.energy ?? DEFAULT_MOOD.energy,
+    social: newMood?.social ?? DEFAULT_MOOD.social,
+    novelty: newMood?.novelty ?? DEFAULT_MOOD.novelty,
+  };
+  try {
+    localStorage.setItem(MOOD_STORAGE_KEY, JSON.stringify(validMood));
+  } catch (err) {
+    console.warn('Failed to persist mood vector:', err);
+  }
+  return validMood;
+}
+
+/**
+ * Calculates dynamic vector convergence based on signed element-wise update:
+ * u_{t+1} = u_t + alpha * weight * (e_t - u_t)
+ * 
+ * Note: 'currentMood' parameter is optional; reads internally if omitted.
+ */
+export function applyVectorDrift(eventVector, action, currentMood = null) {
+  // Resolve mood state internally if missing or empty
+  const safeMood = currentMood && Object.keys(currentMood).length > 0 
+    ? currentMood 
+    : getCurrentMood();
+
+  // Convergence action weights
+  const weights = {
+    'not_my_scene': -1.0, // Rejection: push vector opposite to event delta
+    'maybe_later': 0.0,   // Neutral: skip without altering mood weights
+    'totally_vibe': 1.0    // Attraction: pull vector toward event delta
+  };
+
+  const weight = weights[action] ?? 0.0;
+
+  // Skip calculation if action is neutral (weight = 0) or event vector is missing
+  if (weight === 0.0 || !eventVector) {
+    console.log("Action is neutral or event vector missing. Vector remains unchanged.");
+    return safeMood;
+  }
+
+  const keys = ['energy', 'social', 'novelty'];
+  const updatedMood = { ...safeMood };
+
+  keys.forEach((key) => {
+    const uVal = safeMood[key];
+    const eVal = eventVector?.[key] ?? eventVector?.[`${key}_vector`] ?? 0.5;
+
+    // Signed delta convergence step
+    const delta = eVal - uVal;
+    const shifted = uVal + VECTOR_DRIFT_ALPHA * weight * delta;
+
+    // Clamp bounds [0.0, 1.0]
+    updatedMood[key] = Math.max(0.0, Math.min(1.0, Number(shifted.toFixed(4))));
+  });
+
+  // Save updated vector back to local storage for instant persistence
+  setCurrentMood(updatedMood);
+
+  // Debug logging for transparency
+  console.group("Vector Drift Calculation");
+  console.log("Action:", action, "Weight:", weight);
+  console.log("Current Mood Vector:", safeMood);
+  console.log("Target Event Vector:", {
+    energy: eventVector?.energy ?? eventVector?.energy_vector ?? 0.5,
+    social: eventVector?.social ?? eventVector?.social_vector ?? 0.5,
+    novelty: eventVector?.novelty ?? eventVector?.novelty_vector ?? 0.5,
+  });
+  console.log("NEW Shifted Mood Vector:", updatedMood);
+  console.groupEnd();
+
+  return updatedMood;
+}
+
+/**
+ * Log a card swipe action to Supabase & LocalStorage + Apply Vector Convergence
+ */
+export async function recordSwipe(action, event, userEmail = null, currentMood = null) {
+  const clientId = getOrCreateClientId();
+  const userHash = userEmail ? await hashEmail(userEmail) : clientId;
+
+  // 1. Calculate & apply dynamic vector convergence
+  const newMoodVector = applyVectorDrift(event, action, currentMood);
+
+  // 2. Save to LocalStorage for instant UI fallback
+  try {
+    const localHistory = JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY) || '[]');
+    const existingIndex = localHistory.findIndex((item) => item.event_id === event.id);
+    const entry = {
+      id: crypto.randomUUID(),
+      user_id: userHash,
+      event_id: event.id,
+      action: action,
+      created_at: new Date().toISOString(),
+      events: event,
+      mood_snapshot: newMoodVector,
+    };
+
+    if (existingIndex >= 0) {
+      localHistory[existingIndex] = entry;
+    } else {
+      localHistory.unshift(entry);
+    }
+    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(localHistory));
+  } catch (err) {
+    console.warn('LocalStorage save failed:', err);
+  }
+
+  // 3. Persist to Supabase DB
+  if (supabase) {
+    const { error } = await supabase.from('user_interactions').upsert(
+      {
+        user_id: userHash,
+        event_id: event.id,
+        action: action,
+        created_at: new Date().toISOString(),
+        mood_snapshot: newMoodVector,
+      },
+      { onConflict: 'user_id,event_id' }
+    );
+
+    if (error) {
+      console.error('Supabase write error:', error);
+    }
+  }
+
+  return newMoodVector;
+}
+
+/**
+ * Fetch active, unexpired user saved events ("View My Past Events")
+ */
+export async function getUserHistory(userEmail = null) {
+  const clientId = getOrCreateClientId();
+  const userHash = userEmail ? await hashEmail(userEmail) : clientId;
+
+  // 1. Attempt Supabase lookup using JOIN query
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('user_interactions')
+      .select(`
+        id,
+        action,
+        created_at,
+        events!inner (*)
+      `)
+      .eq('user_id', userHash)
+      .in('action', ['totally_vibe', 'maybe_later'])
+      .order('created_at', { ascending: false });
+
+    if (!error && data) {
+      const todayStr = new Date().toISOString().split('T')[0];
+
+      // Filter out expired events
+      const unexpiredData = data.filter((item) => {
+        const endDate = item.events?.end_date || item.events?.date;
+        if (!endDate) return true; // Keep if no explicit end date exists
+        return endDate >= todayStr;
+      });
+
+      return unexpiredData;
+    }
+  }
+
+  // 2. Fallback to LocalStorage if DB fetch fails or returns empty
+  try {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const localHistory = JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY) || '[]');
+
+    return localHistory.filter((item) => {
+      const isMatch =
+        item.user_id === userHash && ['totally_vibe', 'maybe_later'].includes(item.action);
+      const endDate = item.events?.end_date || item.events?.date;
+      const isNotExpired = !endDate || endDate >= todayStr;
+
+      return isMatch && isNotExpired;
+    });
+  } catch (err) {
+    return [];
+  }
+}
+```
+
+src/utils/session.js = ```
+// src/utils/session.js
+export function getOrCreateClientId() {
+  let clientId = localStorage.getItem('vibe_client_id');
+  if (!clientId) {
+    clientId = crypto.randomUUID();
+    localStorage.setItem('vibe_client_id', clientId);
+  }
+  return clientId;
+}
+```
+
+src/App.jsx = ```
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from './lib/supabaseClient.js';
 import Header from './components/Header';
 import SwipeDeck from './components/SwipeDeck';
-import HistoryModal from './components/HistoryModal';
 import EmailPromptModal from './components/EmailPromptModal';
 import { ThumbsDown, Heart, Flame, Sparkles } from 'lucide-react';
+import HistoryPage from './components/HistoryPage';
+import { getCurrentMood, recordSwipe } from './services/historyService';
 
 export default function App() {
   const [rawEvents, setRawEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sessionKey, setSessionKey] = useState('');
   const [userHash, setUserHash] = useState(null);
+  const [currentView, setCurrentView] = useState('deck'); // 'deck' | 'history'
 
-  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isInitialPromptOpen, setIsInitialPromptOpen] = useState(false);
-  
+
   const [bookmarks, setBookmarks] = useState(() => {
     try {
       const saved = localStorage.getItem('vivida_bookmarks');
@@ -1325,11 +2042,8 @@ export default function App() {
     }
   });
 
-  const [mood, setMood] = useState({
-    energy: 0.5,
-    social: 0.5,
-    novelty: 0.5,
-  });
+  // Initialize mood directly from historyService / LocalStorage fallback
+  const [mood, setMood] = useState(() => getCurrentMood());
 
   useEffect(() => {
     try {
@@ -1444,13 +2158,23 @@ export default function App() {
   const handleInteraction = useCallback(async (type, event) => {
     if (!event) return;
 
+    // Remove event from current deck view
     setRawEvents((prev) => prev.filter((e) => e.id !== event.id));
 
+    // Update bookmarks count for positive interactions
     if (type === 'interested' || type === 'totally_vibe' || type === 'maybe_later') {
       setBookmarks((prev) => {
         if (prev.some((b) => b.id === event.id)) return prev;
         return [...prev, event];
       });
+    }
+
+    // 1. Compute dynamic vector drift and persist to historyService / local storage
+    const updatedMoodVector = await recordSwipe(type, event, null, mood);
+
+    // 2. Reflect new vector gradient back into UI sliders & state
+    if (updatedMoodVector) {
+      setMood(updatedMoodVector);
     }
 
     const payload = {
@@ -1472,14 +2196,19 @@ export default function App() {
 
   const activeTopEvent = rankedEvents[0];
 
+  // Full page History view
+  if (currentView === 'history') {
+    return <HistoryPage onBack={() => setCurrentView('deck')} />;
+  }
+
   return (
     <div className="h-dvh w-full bg-parchment-50 text-parchment-900 flex flex-col justify-between overflow-hidden pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
-      {/* Header */}
+      {/* Header - Unified History Route */}
       <Header 
         mood={mood}
         onChangeMood={setMood}
-        onOpenSaved={() => setIsHistoryOpen(true)}
-        onOpenHistory={() => setIsHistoryOpen(true)}
+        onOpenSaved={() => setCurrentView('history')}
+        onOpenHistory={() => setCurrentView('history')}
         bookmarkCount={bookmarks.length}
         hasUserHash={!!userHash}
       />
@@ -1531,7 +2260,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Modals */}
+      {/* Email Prompt Modal */}
       {isInitialPromptOpen && (
         <EmailPromptModal
           isOpen={isInitialPromptOpen}
@@ -1543,23 +2272,12 @@ export default function App() {
           }}
         />
       )}
-
-      <HistoryModal
-        isOpen={isHistoryOpen}
-        onClose={() => setIsHistoryOpen(false)}
-        userHash={userHash}
-        bookmarks={bookmarks}
-        onUserHashCreated={(newHash) => {
-          setUserHash(newHash);
-          localStorage.setItem('vivida_user_hash', newHash);
-        }}
-      />
     </div>
   );
 }
 ```
 
-index.css = ```
+src/index.css = ```
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -1586,7 +2304,7 @@ index.css = ```
 }
 ```
 
-main.jsx = ```
+src/main.jsx = ```
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
@@ -7276,6 +7994,15 @@ package.json = ```
     "node": ">=18.0.0"
   }
 }
+```
+
+postcss.config.js = ```
+export default {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+};
 ```
 
 tailwind.config.js = ```
