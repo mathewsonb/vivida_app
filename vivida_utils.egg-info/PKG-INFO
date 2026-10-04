@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: vivida-utils
+Version: 0.1.0
+Summary: Vivida App utilities and web scraping services
+Requires-Python: >=3.8
+License-File: LICENSE.md
+Requires-Dist: beautifulsoup4
+Requires-Dist: selenium
+Requires-Dist: undetected-chromedriver
+Dynamic: license-file
