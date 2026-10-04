@@ -1,0 +1,13 @@
+LICENSE.md
+README.md
+pyproject.toml
+node_modules/flatted/python/flatted.py
+scraper/pipeline.py
+utils/get_soup/__init__.py
+utils/get_soup/get_soup.py
+utils/get_soup/main.py
+vivida_utils.egg-info/PKG-INFO
+vivida_utils.egg-info/SOURCES.txt
+vivida_utils.egg-info/dependency_links.txt
+vivida_utils.egg-info/requires.txt
+vivida_utils.egg-info/top_level.txt
