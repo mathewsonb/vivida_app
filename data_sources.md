@@ -34,6 +34,10 @@
 |Port of Tacoma|[portoftacoma.com](https://www.portoftacoma.com/events/list)|Public Utility or Government|assessment|
 |City of Tacoma|[tacoma.gov](https://tacoma.gov/events/)|Public Utility or Government|staged|
 |Federal Way Performing Arts Center|[fwpaec.org](https://fwpaec.org/event-calendar/)|Event Center|production|
-|text|[biz.com](url)|text|staged|
+|Tacoma Comedy Club|[tacomacomedyclub.com](https://www.tacomacomedyclub.com/events/)|General Venue|production|
+|New Frontier Lounge|[newfrontierlounge.com](https://www.newfrontierlounge.com/calendar#/events)|General Venue|production|
+|The Valley|[thevalleytacoma.com](https://www.thevalleytacoma.com/new-events-1)|General Venue|production|
+|Doyle's Public House|[doylespublichouse.com](https://www.doylespublichouse.com/events)|General Venue|staged|
+|Jazzbones|[jazzbones.com](https://jazzbones.com/#/events)|General Venue|production|
 |text|[biz.com](url)|text|staged|
 |text|[biz.com](url)|text|staged|
