@@ -28,7 +28,7 @@
 |Tacoma Arts Live|[tacomaartslive.org](https://www.tacomaartslive.org/upcoming-events/)|General Venue|staged|
 |LeMay Car Museum|[americascarmuseum.org](https://www.americascarmuseum.org/events)|Museum or Attraction|assessment|
 |The Museum of Glass|[museumofglass.org](https://www.museumofglass.org/calendar-of-events)|Museum or Attraction|staged|
-|Tacoma Art Museum|[tacomaartmuseum.org](https://www.tacomaartmuseum.org/events/)|Museum or Attraction|staged|
+|Tacoma Art Museum|[tacomaartmuseum.org](https://www.tacomaartmuseum.org/events/)|Museum or Attraction|production|
 |Tacoma Night Market|[tacomanightmarket.com](https://tacomanightmarket.com/pages/next-market)|Community Sponsored|staged|
 |Visit Tacoma-Pierce County|[visitpiercecounty.com](https://www.visitpiercecounty.com/events/?bounds=false&view=list&sort=date)|Community Sponsored|staged|
 |Port of Tacoma|[portoftacoma.com](https://www.portoftacoma.com/events/list)|Public Utility or Government|assessment|
@@ -37,7 +37,7 @@
 |Tacoma Comedy Club|[tacomacomedyclub.com](https://www.tacomacomedyclub.com/events/)|General Venue|production|
 |New Frontier Lounge|[newfrontierlounge.com](https://www.newfrontierlounge.com/calendar#/events)|General Venue|production|
 |The Valley|[thevalleytacoma.com](https://www.thevalleytacoma.com/new-events-1)|General Venue|production|
-|Doyle's Public House|[doylespublichouse.com](https://www.doylespublichouse.com/events)|General Venue|staged|
+|Doyle's Public House|[doylespublichouse.com](https://www.doylespublichouse.com/events)|General Venue|production|
 |Jazzbones|[jazzbones.com](https://jazzbones.com/#/events)|General Venue|production|
 |text|[biz.com](url)|text|staged|
 |text|[biz.com](url)|text|staged|
