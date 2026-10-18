@@ -101,28 +101,44 @@ export default function HistoryPage({ onBack }) {
   // Map events to date keys (YYYY-MM-DD)
   const eventsByDate = useMemo(() => {
     const map = {};
+
     filteredItems.forEach((item) => {
       const ev = item.events || {};
       const schedules = getScheduleList(ev);
 
       schedules.forEach((sched) => {
-        const rawDate = String(sched.dateStr);
-        const matches = rawDate.match(/\d{4}-\d{2}-\d{2}/g);
+        const rawDate = String(sched.dateStr).trim();
+        let dateKey = null;
 
-        if (matches) {
-          matches.forEach((dateKey) => {
-            if (!map[dateKey]) map[dateKey] = [];
-            map[dateKey].push({
-              historyId: item.id,
-              event: ev,
-              url: sched.url,
-              dateKey,
-              action: item.action
-            });
+        // 1. Try ISO YYYY-MM-DD match
+        const isoMatches = rawDate.match(/\d{4}-\d{2}-\d{2}/g);
+        if (isoMatches && isoMatches.length > 0) {
+          dateKey = isoMatches[0];
+        } else if (rawDate) {
+          // 2. Fallback to standard Date parsing for "Oct 17, 2026", etc.
+          const parsed = new Date(rawDate);
+          if (!isNaN(parsed.getTime())) {
+            const y = parsed.getFullYear();
+            const m = String(parsed.getMonth() + 1).padStart(2, '0');
+            const d = String(parsed.getDate()).padStart(2, '0');
+            dateKey = `${y}-${m}-${d}`;
+          }
+        }
+
+        // Append to calendar map if valid date was found
+        if (dateKey) {
+          if (!map[dateKey]) map[dateKey] = [];
+          map[dateKey].push({
+            historyId: item.id,
+            event: ev,
+            url: sched.url,
+            dateKey,
+            action: item.action
           });
         }
       });
     });
+
     return map;
   }, [filteredItems]);
 
@@ -492,9 +508,9 @@ export default function HistoryPage({ onBack }) {
         </div>
       </main>
 
-      {/* ======================================================== */}
+      {/* ======================================================== */
       /* EVENT DETAIL POP-UP MODAL OVERLAY                        */
-      /* ======================================================== */
+      /* ======================================================== */}
       {activeModalEvent && (() => {
         const ev = activeModalEvent.event || {};
         const venue = ev.venue_name || ev.venue || 'Local Venue';
