@@ -1,6 +1,6 @@
 // src/components/SwipeDeck.jsx
 import React from 'react';
-import { Calendar, MapPin, Sparkles, Flame, ExternalLink, Tag, Bookmark } from 'lucide-react';
+import { Calendar, MapPin, Sparkles, Flame, ExternalLink, Tag, Bookmark, RotateCcw } from 'lucide-react';
 import { motion, useMotionValue, useTransform, AnimatePresence, animate } from 'framer-motion';
 
 const FALLBACK_IMAGE = "https://images.unsplash.com/photo-1492684223066-81342ee5ff30?auto=format&fit=crop&w=800&q=80";
@@ -21,15 +21,27 @@ function sanitizeUrl(url) {
   return '#';
 }
 
-export default function SwipeDeck({ events, mood, onSwipe }) {
+export default function SwipeDeck({ events, mood, onSwipe, onReset }) {
   if (!events || events.length === 0) {
     return (
-      <div className="h-80 rounded-3xl border-2 border-dashed border-parchment-200 flex flex-col items-center justify-center p-6 text-center bg-parchment-100/50">
-        <Sparkles className="w-10 h-10 text-terracotta/40 mb-3" />
-        <h3 className="font-serif text-lg font-bold text-parchment-900">You've explored all local vibes</h3>
-        <p className="text-xs text-parchment-800 mt-1 max-w-xs">
-          Adjust your mood sliders above or check back later as new events get ingested.
+      <div className="h-80 rounded-3xl border-2 border-dashed border-parchment-200 flex flex-col items-center justify-center p-6 text-center bg-parchment-100/50 space-y-3">
+        <Sparkles className="w-10 h-10 text-terracotta/40 mb-1" />
+        <h3 className="font-serif text-lg font-bold text-parchment-900">
+          You've explored all local vibes
+        </h3>
+        <p className="text-xs text-parchment-800 max-w-xs leading-relaxed">
+          Adjust your mood sliders above, clear your history to explore again, or check back later as new events get ingested.
         </p>
+
+        {onReset && (
+          <button
+            onClick={onReset}
+            className="mt-2 inline-flex items-center gap-2 bg-terracotta text-white font-bold px-4 py-2 rounded-2xl hover:bg-terracotta-hover transition-transform active:scale-95 text-xs shadow-md"
+          >
+            <RotateCcw className="w-4 h-4" />
+            <span>Reset Deck & Clear History</span>
+          </button>
+        )}
       </div>
     );
   }
@@ -67,7 +79,7 @@ export default function SwipeDeck({ events, mood, onSwipe }) {
   const y = useMotionValue(0);
 
   const rotate = useTransform(x, [-200, 200], [-12, 12]);
-  
+
   // 1:1 Sync with Left Drag (Not My Scene)
   const rejectScale = useTransform(x, [0, -150], [1, 2]);
   const swipeRejectOpacity = useTransform(x, [0, -150], [0, 1]);

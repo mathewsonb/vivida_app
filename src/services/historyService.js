@@ -181,24 +181,32 @@ export async function getUserHistory(userEmail = null) {
 
   if (supabase) {
     try {
-      const { data, error } = await supabase
+      const { data, count, error } = await supabase
         .from('user_interactions')
         .select(`
           id,
           action,
           created_at,
           events!inner (*)
-        `)
+        `, { count: 'exact' })
         .eq('user_id', userHash)
         .in('action', ['totally_vibe', 'maybe_later'])
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false })
+        .range(0, 999); // <--- OVERRIDES POSTGREST 100-ROW DEFAULT CEILING
 
       if (!error && data) {
-        const todayStr = new Date().toISOString().split('T')[0];
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
         return data.filter((item) => {
-          const endDate = item.events?.end_date || item.events?.date;
-          if (!endDate) return true;
-          return endDate >= todayStr;
+          const rawDate = item.events?.end_date || item.events?.date;
+          if (!rawDate) return true; // Keep if no end date specified
+
+          // Robust Date Parsing
+          const eventDate = new Date(rawDate);
+          if (isNaN(eventDate.getTime())) return true; // Keep if date string unparseable
+
+          return eventDate >= today;
         });
       }
     } catch (err) {
@@ -208,13 +216,20 @@ export async function getUserHistory(userEmail = null) {
 
   // LocalStorage Fallback
   try {
-    const todayStr = new Date().toISOString().split('T')[0];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
     const localHistory = JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY) || '[]');
 
     return localHistory.filter((item) => {
       const isMatch = item.user_id === userHash && ['totally_vibe', 'maybe_later'].includes(item.action);
-      const endDate = item.events?.end_date || item.events?.date;
-      return isMatch && (!endDate || endDate >= todayStr);
+      const rawDate = item.events?.end_date || item.events?.date;
+      if (!isMatch) return false;
+      if (!rawDate) return true;
+
+      const eventDate = new Date(rawDate);
+      if (isNaN(eventDate.getTime())) return true;
+
+      return eventDate >= today;
     });
   } catch (err) {
     return [];
