@@ -75,6 +75,17 @@ export default function App() {
     setMood(updated);
   }, []);
 
+  // Helper to keep bookmarks & badge counter synced with full database and local history
+  const refreshHistoryCount = useCallback(async (hash = null) => {
+    const activeHash = hash || userHash || localStorage.getItem('vivida_user_hash');
+    const historyItems = await getUserHistory(activeHash);
+    
+    if (historyItems && Array.isArray(historyItems)) {
+      const savedEvents = historyItems.map((item) => item.events || item.event_snapshot).filter(Boolean);
+      setBookmarks(savedEvents);
+    }
+  }, [userHash]);
+
   useEffect(() => {
     try {
       localStorage.setItem('vivida_bookmarks', JSON.stringify(bookmarks));
@@ -192,16 +203,11 @@ export default function App() {
     const storedHash = localStorage.getItem('vivida_user_hash');
     if (storedHash) {
       setUserHash(storedHash);
-      getUserHistory(storedHash).then((history) => {
-        if (history && history.length > 0) {
-          const savedEvents = history.map((item) => item.events || item.event_snapshot).filter(Boolean);
-          setBookmarks(savedEvents);
-        }
-      });
+      refreshHistoryCount(storedHash);
     } else {
       setIsInitialPromptOpen(true);
     }
-  }, []);
+  }, [refreshHistoryCount]);
 
   useEffect(() => {
     fetchEvents();
@@ -291,7 +297,7 @@ export default function App() {
       });
   }, [rawEvents, mood, extractDatesFromSchedule]);
 
-  const handleInteraction = useCallback((type, event) => {
+  const handleInteraction = useCallback(async (type, event) => {
     if (!event) return;
 
     const activeHash = userHash || localStorage.getItem('vivida_user_hash') || sessionKey;
@@ -307,17 +313,10 @@ export default function App() {
 
     setRawEvents((prev) => prev.filter((e) => String(e.id).trim().toLowerCase() !== String(event.id).trim().toLowerCase()));
 
-    if (type === 'interested' || type === 'totally_vibe' || type === 'maybe_later') {
-      setBookmarks((prev) => {
-        if (prev.some((b) => String(b.id).trim().toLowerCase() === String(event.id).trim().toLowerCase())) return prev;
-        return [...prev, event];
-      });
-    }
-
     const nextMood = applyVectorDrift(event, type, mood);
     setMood(nextMood);
 
-    recordSwipe(type, event, activeHash, nextMood);
+    await recordSwipe(type, event, activeHash, nextMood);
 
     if (supabase) {
       supabase.from('event_conversions').insert({
@@ -330,9 +329,14 @@ export default function App() {
         target_novelty: Number(nextMood.novelty),
       }).catch((err) => console.error('Async conversion insert error:', err));
     }
-  }, [sessionKey, userHash, mood]);
 
-  const handleUndo = useCallback(() => {
+    // Refresh history count after recording swipe to keep header counter accurate
+    if (['interested', 'totally_vibe', 'maybe_later'].includes(type)) {
+      refreshHistoryCount(activeHash);
+    }
+  }, [sessionKey, userHash, mood, refreshHistoryCount]);
+
+  const handleUndo = useCallback(async () => {
     if (interactionStack.length === 0) return;
 
     const lastInteraction = interactionStack[interactionStack.length - 1];
@@ -345,8 +349,6 @@ export default function App() {
       setMood(restoredMood);
     }
 
-    setBookmarks((prev) => prev.filter((b) => String(b.id).trim().toLowerCase() !== String(event.id).trim().toLowerCase()));
-
     try {
       const history = JSON.parse(localStorage.getItem('vibe_history') || '[]');
       const filteredHistory = history.filter((item) => String(item.event_id).trim().toLowerCase() !== String(event.id).trim().toLowerCase());
@@ -357,18 +359,16 @@ export default function App() {
 
     const activeUserIdentifier = userHash || localStorage.getItem('vivida_user_hash') || sessionKey;
     if (supabase && activeUserIdentifier) {
-      supabase
+      await supabase
         .from('user_interactions')
         .delete()
         .eq('user_id', activeUserIdentifier)
-        .eq('event_id', String(event.id))
-        .then(({ error }) => {
-          if (error) console.error('Error reverting remote interaction:', error.message);
-        });
+        .eq('event_id', String(event.id));
     }
 
     setInteractionStack((prev) => prev.slice(0, -1));
-  }, [interactionStack, sessionKey, userHash]);
+    refreshHistoryCount(activeUserIdentifier);
+  }, [interactionStack, sessionKey, userHash, refreshHistoryCount]);
 
   const activeTopEvent = rankedEvents[0];
 
@@ -509,13 +509,7 @@ export default function App() {
             localStorage.setItem('vivida_user_hash', hash);
             setUserHash(hash);
             setIsInitialPromptOpen(false);
-
-            const history = await getUserHistory(hash);
-            if (history && history.length > 0) {
-              const savedEvents = history.map((item) => item.events || item.event_snapshot).filter(Boolean);
-              setBookmarks(savedEvents);
-            }
-
+            await refreshHistoryCount(hash);
             await fetchEvents(hash);
           }}
         />
