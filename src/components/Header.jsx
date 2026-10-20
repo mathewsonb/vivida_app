@@ -6,7 +6,6 @@ import {
   History, 
   ChevronUp, 
   Flame, 
-  Bookmark, 
   ShipWheel,
   RotateCcw,
   ShieldCheck
@@ -52,7 +51,8 @@ export default function Header({
     };
   }, []);
 
-  const totalCount = vibeCount + savedCount;
+  // Use vibeCount directly to avoid double-counting if savedCount is also passed
+  const totalCount = vibeCount || savedCount;
 
   return (
     <header className="sticky top-0 z-40 bg-parchment-50/95 backdrop-blur-md border-b border-parchment-200 shadow-sm">

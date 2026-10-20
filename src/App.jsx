@@ -59,6 +59,9 @@ export default function App() {
 
   const [interactionStack, setInteractionStack] = useState([]);
 
+  // Explicit count override when HistoryPage renders expanded schedule cards
+  const [historyRenderedCount, setHistoryRenderedCount] = useState(null);
+
   const [bookmarks, setBookmarks] = useState(() => {
     try {
       const saved = localStorage.getItem('vivida_bookmarks');
@@ -180,7 +183,6 @@ export default function App() {
         .select('*')
         .range(0, 999);
 
-      // Pass raw comma-separated UUIDs
       if (swipedArray.length > 0) {
         query = query.not('id', 'in', `(${swipedArray.join(',')})`);
       }
@@ -191,7 +193,6 @@ export default function App() {
       const now = new Date();
       const localTodayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
-      // Normalized client-side filtering check
       const validEvents = (data || []).filter((event) => {
         const eventIdStr = String(event.id).trim().toLowerCase();
         if (localSwipedIds.has(eventIdStr)) return false;
@@ -216,7 +217,6 @@ export default function App() {
     }
   }, [userHash, sessionKey, extractDatesFromSchedule]);
 
-  // Session Initialization & User Hash Hydration
   useEffect(() => {
     const activeKey = getOrCreateClientId();
     setSessionKey(activeKey);
@@ -256,6 +256,7 @@ export default function App() {
       localStorage.removeItem('vibe_history');
       localStorage.removeItem('vivida_bookmarks');
       setBookmarks([]);
+      setHistoryRenderedCount(0);
       setInteractionStack([]);
 
       const activeUserIdentifier = userHash || localStorage.getItem('vivida_user_hash') || sessionKey;
@@ -288,6 +289,7 @@ export default function App() {
     setMood(defaultMood);
 
     setBookmarks([]);
+    setHistoryRenderedCount(0);
     setInteractionStack([]);
     setIsLocalResetModalOpen(false);
 
@@ -332,10 +334,8 @@ export default function App() {
       },
     ]);
 
-    // Optimistically remove from discovery deck
     setRawEvents((prev) => prev.filter((e) => String(e.id).trim().toLowerCase() !== String(event.id).trim().toLowerCase()));
 
-    // Optimistically add to bookmarks so the Header counter badge updates immediately
     if (['interested', 'totally_vibe', 'maybe_later'].includes(type)) {
       setBookmarks((prev) => {
         const eventIdStr = String(event.id).trim().toLowerCase();
@@ -349,7 +349,6 @@ export default function App() {
     const nextMood = applyVectorDrift(event, type, mood);
     setMood(nextMood);
 
-    // Record swipe in background
     recordSwipe(type, event, activeHash, nextMood);
 
     if (supabase) {
@@ -404,8 +403,16 @@ export default function App() {
 
   const activeTopEvent = rankedEvents[0];
 
+  // Derive badge count directly from HistoryPage rendered count when available
+  const effectiveVibeCount = historyRenderedCount !== null ? historyRenderedCount : bookmarks.length;
+
   if (currentView === 'history') {
-    return <HistoryPage onBack={() => setCurrentView('deck')} />;
+    return (
+      <HistoryPage 
+        onBack={() => setCurrentView('deck')} 
+        onCountUpdate={(renderedCount) => setHistoryRenderedCount(renderedCount)}
+      />
+    );
   }
 
   return (
@@ -416,7 +423,7 @@ export default function App() {
         onOpenSaved={() => setCurrentView('history')}
         onOpenHistory={() => setCurrentView('history')}
         onResetLocalHistory={() => setIsLocalResetModalOpen(true)}
-        vibeCount={bookmarks.length}
+        vibeCount={effectiveVibeCount}
         hasUserHash={!!userHash}
       />
 
