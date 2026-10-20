@@ -69,33 +69,33 @@ export default function Header({
 
   return (
     <>
-      {/* FLOATING OVERLAY: Centered over the top of the event card */}
+      {/* FLOATING OVERLAY: Anchored at top of card with borderless blurred backdrop */}
       {animState !== 'docked' && (
         <div 
           className={`fixed inset-0 z-50 pointer-events-none flex items-center justify-center transition-all duration-[2000ms] ease-in-out ${
             animState === 'collapsing' 
               ? 'opacity-0 scale-50 -translate-y-48 -translate-x-28' 
-              : 'opacity-100 scale-100 translate-y-14 translate-x-0'
+              : 'opacity-100 scale-100 translate-y-12 translate-x-0'
           }`}
         >
-          {/* Transparent Inner Container */}
-          <div className="flex items-center gap-3">
-            <ShipWheel className="w-10 h-10 text-terracotta shrink-0 drop-shadow-md" />
+          {/* Borderless Blurred Container */}
+          <div className="bg-parchment-50/80 backdrop-blur-md px-6 py-3 rounded-full shadow-lg flex items-center gap-3">
+            <ShipWheel className="w-9 h-9 text-terracotta shrink-0 drop-shadow-xs" />
             <div className="flex items-center gap-2">
               
               {/* Morphing "Viva la vida" text wrapper */}
               <div className="relative flex items-center">
                 <span 
-                  className={`font-serif font-black text-4xl sm:text-5xl tracking-tight text-parchment-900 transition-all duration-[2000ms] ease-in-out drop-shadow-md ${
+                  className={`font-serif font-black text-3xl sm:text-4xl tracking-tight text-parchment-900 transition-all duration-[2500ms] ease-in-out ${
                     animState === 'collapsing' ? 'opacity-0 scale-90' : 'opacity-100 scale-100'
                   }`}
                 >
-                  Viva la vida,
+                  Viva la Vida!
                 </span>
                 
                 {/* Embedded "Vivida" target text */}
                 <span 
-                  className={`font-serif font-bold text-4xl sm:text-5xl tracking-tight text-parchment-900 absolute left-0 transition-all duration-[2000ms] ease-in-out drop-shadow-md ${
+                  className={`font-serif font-bold text-3xl sm:text-4xl tracking-tight text-parchment-900 absolute left-0 transition-all duration-[2500ms] ease-in-out ${
                     animState === 'collapsing' ? 'opacity-100 scale-100' : 'opacity-0 scale-90'
                   }`}
                 >
@@ -104,12 +104,12 @@ export default function Header({
               </div>
 
               {/* City Tag */}
-              <span 
+              {/* <span 
                 style={{ fontFamily: "'Permanent Marker', cursive" }}
-                className="text-terracotta text-4xl sm:text-5xl tracking-wide leading-none transform -rotate-3 select-none drop-shadow-md"
+                className="text-terracotta text-3xl sm:text-4xl tracking-wide leading-none transform -rotate-3 select-none"
               >
                 {city}
-              </span>
+              </span> */}
             </div>
           </div>
         </div>
