@@ -192,7 +192,7 @@ export async function getUserHistory(userEmail = null) {
         .eq('user_id', userHash)
         .in('action', ['totally_vibe', 'maybe_later'])
         .order('created_at', { ascending: false })
-        .range(0, 999); // <--- OVERRIDES POSTGREST 100-ROW DEFAULT CEILING
+        .range(0, 999);
 
       if (!error && data) {
         const today = new Date();
@@ -200,11 +200,10 @@ export async function getUserHistory(userEmail = null) {
 
         return data.filter((item) => {
           const rawDate = item.events?.end_date || item.events?.date;
-          if (!rawDate) return true; // Keep if no end date specified
+          if (!rawDate) return true;
 
-          // Robust Date Parsing
           const eventDate = new Date(rawDate);
-          if (isNaN(eventDate.getTime())) return true; // Keep if date string unparseable
+          if (isNaN(eventDate.getTime())) return true;
 
           return eventDate >= today;
         });
@@ -232,6 +231,42 @@ export async function getUserHistory(userEmail = null) {
       return eventDate >= today;
     });
   } catch (err) {
+    return [];
+  }
+}
+
+/**
+ * Retrieves past user interactions corresponding to current or upcoming events.
+ * Used to preserve previous decisions across local history resets.
+ */
+export async function getFutureUserInteractions(userIdentifier) {
+  if (!supabase || !userIdentifier) return [];
+
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+  try {
+    const { data, error } = await supabase
+      .from('user_interactions')
+      .select(`
+        id,
+        action,
+        created_at,
+        event_id,
+        events!inner (*)
+      `)
+      .eq('user_id', userIdentifier)
+      .order('created_at', { ascending: false });
+
+    if (error || !data) return [];
+
+    return data.filter((item) => {
+      const schedule = item.events?.schedule;
+      if (!schedule) return true;
+      return String(schedule).includes(todayStr) || String(schedule) >= todayStr;
+    });
+  } catch (err) {
+    console.warn('Failed to retrieve future user interactions:', err);
     return [];
   }
 }
