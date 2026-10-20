@@ -7,7 +7,7 @@ import ContinuousFeed from './components/ContinuousFeed';
 import EmailPromptModal from './components/EmailPromptModal';
 import { ThumbsDown, Heart, Flame, Sparkles, RotateCcw, AlertTriangle, X, Layers, ListFilter, Undo2 } from 'lucide-react';
 import HistoryPage from './components/HistoryPage';
-import { getCurrentMood, recordSwipe, setCurrentMood, applyVectorDrift, getFutureUserInteractions } from './services/historyService';
+import { getCurrentMood, recordSwipe, setCurrentMood, applyVectorDrift, getFutureUserInteractions, getUserHistory } from './services/historyService';
 import { getOrCreateClientId } from './utils/session';
 
 const calculateEuclideanSimilarity = (userMood, event) => {
@@ -111,32 +111,32 @@ export default function App() {
     return dates;
   }, []);
 
-  const fetchEvents = useCallback(async () => {
+  const fetchEvents = useCallback(async (overrideHash = null) => {
     setLoading(true);
     try {
       if (!supabase) return;
 
       const localSwipedIds = new Set();
-      
-      // 1. Read local history IDs
+      const activeUserIdentifier = overrideHash || userHash || localStorage.getItem('vivida_user_hash') || sessionKey || getOrCreateClientId();
+
+      // 1. Read local history IDs & normalize
       try {
         const localHistory = JSON.parse(localStorage.getItem('vibe_history') || '[]');
         if (Array.isArray(localHistory)) {
           localHistory.forEach((item) => {
-            if (item?.event_id) localSwipedIds.add(String(item.event_id));
+            if (item?.event_id) localSwipedIds.add(String(item.event_id).trim().toLowerCase());
           });
         }
       } catch (err) {
         console.warn('Failed to read vibe_history from localStorage:', err);
       }
 
-      // 2. Recall past choices on future events from Supabase database
-      const activeUserIdentifier = userHash || sessionKey;
+      // 2. Fetch past choices from Supabase using active user identifier
       if (activeUserIdentifier) {
         const futureInteractions = await getFutureUserInteractions(activeUserIdentifier);
         if (futureInteractions && futureInteractions.length > 0) {
           futureInteractions.forEach((item) => {
-            if (item?.event_id) localSwipedIds.add(String(item.event_id));
+            if (item?.event_id) localSwipedIds.add(String(item.event_id).trim().toLowerCase());
           });
         }
       }
@@ -148,6 +148,7 @@ export default function App() {
         .select('*')
         .range(0, 999);
 
+      // Pass raw comma-separated UUIDs to avoid 22P02 string-casting syntax error
       if (swipedArray.length > 0) {
         query = query.not('id', 'in', `(${swipedArray.join(',')})`);
       }
@@ -158,8 +159,10 @@ export default function App() {
       const now = new Date();
       const localTodayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
+      // Normalized client-side filtering double-check
       const validEvents = (data || []).filter((event) => {
-        if (localSwipedIds.has(String(event.id))) return false;
+        const eventIdStr = String(event.id).trim().toLowerCase();
+        if (localSwipedIds.has(eventIdStr)) return false;
 
         if (!event.schedule) return true;
         const dateList = extractDatesFromSchedule(event.schedule);
@@ -181,6 +184,7 @@ export default function App() {
     }
   }, [userHash, sessionKey, extractDatesFromSchedule]);
 
+  // Session Initialization & User Hash Hydration
   useEffect(() => {
     const activeKey = getOrCreateClientId();
     setSessionKey(activeKey);
@@ -188,6 +192,12 @@ export default function App() {
     const storedHash = localStorage.getItem('vivida_user_hash');
     if (storedHash) {
       setUserHash(storedHash);
+      getUserHistory(storedHash).then((history) => {
+        if (history && history.length > 0) {
+          const savedEvents = history.map((item) => item.events || item.event_snapshot).filter(Boolean);
+          setBookmarks(savedEvents);
+        }
+      });
     } else {
       setIsInitialPromptOpen(true);
     }
@@ -197,7 +207,6 @@ export default function App() {
     fetchEvents();
   }, [fetchEvents]);
 
-  // Recycles unswiped/passed events into feed when exhausted
   const handleExhaustedDeckRecycle = useCallback(() => {
     if (allFetchedEvents.length > 0) {
       setRawEvents([...allFetchedEvents]);
@@ -222,7 +231,7 @@ export default function App() {
       setBookmarks([]);
       setInteractionStack([]);
 
-      const activeUserIdentifier = userHash || sessionKey;
+      const activeUserIdentifier = userHash || localStorage.getItem('vivida_user_hash') || sessionKey;
       if (supabase && activeUserIdentifier) {
         const { error } = await supabase
           .from('user_interactions')
@@ -255,7 +264,6 @@ export default function App() {
     setInteractionStack([]);
     setIsLocalResetModalOpen(false);
 
-    // Re-fetch events while honoring remembered future event choices from remote database
     fetchEvents();
   }, [fetchEvents]);
 
@@ -286,6 +294,8 @@ export default function App() {
   const handleInteraction = useCallback((type, event) => {
     if (!event) return;
 
+    const activeHash = userHash || localStorage.getItem('vivida_user_hash') || sessionKey;
+
     setInteractionStack((prev) => [
       ...prev,
       {
@@ -295,11 +305,11 @@ export default function App() {
       },
     ]);
 
-    setRawEvents((prev) => prev.filter((e) => e.id !== event.id));
+    setRawEvents((prev) => prev.filter((e) => String(e.id).trim().toLowerCase() !== String(event.id).trim().toLowerCase()));
 
     if (type === 'interested' || type === 'totally_vibe' || type === 'maybe_later') {
       setBookmarks((prev) => {
-        if (prev.some((b) => b.id === event.id)) return prev;
+        if (prev.some((b) => String(b.id).trim().toLowerCase() === String(event.id).trim().toLowerCase())) return prev;
         return [...prev, event];
       });
     }
@@ -307,13 +317,13 @@ export default function App() {
     const nextMood = applyVectorDrift(event, type, mood);
     setMood(nextMood);
 
-    recordSwipe(type, event, null, nextMood);
+    recordSwipe(type, event, activeHash, nextMood);
 
     if (supabase) {
       supabase.from('event_conversions').insert({
         session_id: sessionKey || 'anonymous_session',
         email_hash: userHash || null,
-        event_id: event.id,
+        event_id: String(event.id),
         interaction_type: type,
         target_energy: Number(nextMood.energy),
         target_social: Number(nextMood.social),
@@ -335,23 +345,23 @@ export default function App() {
       setMood(restoredMood);
     }
 
-    setBookmarks((prev) => prev.filter((b) => b.id !== event.id));
+    setBookmarks((prev) => prev.filter((b) => String(b.id).trim().toLowerCase() !== String(event.id).trim().toLowerCase()));
 
     try {
       const history = JSON.parse(localStorage.getItem('vibe_history') || '[]');
-      const filteredHistory = history.filter((item) => String(item.event_id) !== String(event.id));
+      const filteredHistory = history.filter((item) => String(item.event_id).trim().toLowerCase() !== String(event.id).trim().toLowerCase());
       localStorage.setItem('vibe_history', JSON.stringify(filteredHistory));
     } catch (err) {
       console.warn('Failed to revert vibe_history in localStorage:', err);
     }
 
-    const activeUserIdentifier = userHash || sessionKey;
+    const activeUserIdentifier = userHash || localStorage.getItem('vivida_user_hash') || sessionKey;
     if (supabase && activeUserIdentifier) {
       supabase
         .from('user_interactions')
         .delete()
         .eq('user_id', activeUserIdentifier)
-        .eq('event_id', event.id)
+        .eq('event_id', String(event.id))
         .then(({ error }) => {
           if (error) console.error('Error reverting remote interaction:', error.message);
         });
@@ -491,11 +501,22 @@ export default function App() {
       {isInitialPromptOpen && (
         <EmailPromptModal
           isOpen={isInitialPromptOpen}
-          onClose={() => setIsInitialPromptOpen(false)}
-          onSuccess={(hash) => {
-            setUserHash(hash);
-            localStorage.setItem('vivida_user_hash', hash);
+          onClose={() => {
             setIsInitialPromptOpen(false);
+            fetchEvents();
+          }}
+          onSuccess={async (hash) => {
+            localStorage.setItem('vivida_user_hash', hash);
+            setUserHash(hash);
+            setIsInitialPromptOpen(false);
+
+            const history = await getUserHistory(hash);
+            if (history && history.length > 0) {
+              const savedEvents = history.map((item) => item.events || item.event_snapshot).filter(Boolean);
+              setBookmarks(savedEvents);
+            }
+
+            await fetchEvents(hash);
           }}
         />
       )}
