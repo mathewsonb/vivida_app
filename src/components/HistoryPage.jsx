@@ -29,6 +29,7 @@ export default function HistoryPage({ onBack }) {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('totally_vibe'); // 'totally_vibe' | 'maybe_later'
   const [displayMode, setDisplayMode] = useState('weekly'); // 'weekly' | 'monthly'
+  const [upcomingOnly, setUpcomingOnly] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [copied, setCopied] = useState(false);
 
@@ -46,6 +47,11 @@ export default function HistoryPage({ onBack }) {
       setLoading(false);
     }
     loadData();
+  }, []);
+
+  const todayStr = useMemo(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   }, []);
 
   const filteredItems = useMemo(() => {
@@ -98,7 +104,7 @@ export default function HistoryPage({ onBack }) {
     return [];
   };
 
-  // Map events to date keys (YYYY-MM-DD)
+  // Map events to date keys (YYYY-MM-DD) with upcoming filtering
   const eventsByDate = useMemo(() => {
     const map = {};
 
@@ -125,8 +131,10 @@ export default function HistoryPage({ onBack }) {
           }
         }
 
-        // Append to calendar map if valid date was found
+        // Apply "Upcoming Only" Filter constraint if active
         if (dateKey) {
+          if (upcomingOnly && dateKey < todayStr) return;
+
           if (!map[dateKey]) map[dateKey] = [];
           map[dateKey].push({
             historyId: item.id,
@@ -140,13 +148,11 @@ export default function HistoryPage({ onBack }) {
     });
 
     return map;
-  }, [filteredItems]);
+  }, [filteredItems, upcomingOnly, todayStr]);
 
   // Active dates sorted chronologically
   const activeDaysList = useMemo(() => {
     const dates = Object.keys(eventsByDate).sort();
-    const now = new Date();
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
     return dates.map((dateKey) => {
       const [y, m, d] = dateKey.split('-').map(Number);
@@ -159,7 +165,7 @@ export default function HistoryPage({ onBack }) {
         entries: eventsByDate[dateKey] || []
       };
     }).filter(day => day.entries.length > 0);
-  }, [eventsByDate]);
+  }, [eventsByDate, todayStr]);
 
   // Safe Monthly calendar grid generator
   const monthlyGrid = useMemo(() => {
@@ -284,30 +290,47 @@ export default function HistoryPage({ onBack }) {
               </button>
             </div>
 
-            {/* VIEW MODE TOGGLE */}
-            <div className="flex items-center bg-white p-1 rounded-xl border border-parchment-200 shadow-xs self-end sm:self-auto">
+            {/* VIEW MODE & UPCOMING TOGGLE CONTROLS */}
+            <div className="flex items-center gap-2 self-end sm:self-auto">
+              {/* UPCOMING ONLY TOGGLE */}
               <button
-                onClick={() => setDisplayMode('weekly')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                  displayMode === 'weekly'
-                    ? 'bg-terracotta text-white shadow-xs'
-                    : 'text-parchment-700 hover:bg-parchment-100'
-                }`}
-              >
-                <List className="w-3.5 h-3.5" />
-                <span>Weekly</span>
-              </button>
-              <button
-                onClick={() => setDisplayMode('monthly')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                  displayMode === 'monthly'
-                    ? 'bg-terracotta text-white shadow-xs'
-                    : 'text-parchment-700 hover:bg-parchment-100'
+                type="button"
+                onClick={() => setUpcomingOnly(prev => !prev)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
+                  upcomingOnly
+                    ? 'bg-terracotta text-white border-terracotta shadow-xs'
+                    : 'bg-white text-parchment-700 border-parchment-200 hover:bg-parchment-100'
                 }`}
               >
                 <CalendarIcon className="w-3.5 h-3.5" />
-                <span>Monthly</span>
+                <span>Upcoming Only</span>
               </button>
+
+              {/* WEEKLY / MONTHLY VIEW SWITCH */}
+              <div className="flex items-center bg-white p-1 rounded-xl border border-parchment-200 shadow-xs">
+                <button
+                  onClick={() => setDisplayMode('weekly')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                    displayMode === 'weekly'
+                      ? 'bg-terracotta text-white shadow-xs'
+                      : 'text-parchment-700 hover:bg-parchment-100'
+                  }`}
+                >
+                  <List className="w-3.5 h-3.5" />
+                  <span>Weekly</span>
+                </button>
+                <button
+                  onClick={() => setDisplayMode('monthly')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                    displayMode === 'monthly'
+                      ? 'bg-terracotta text-white shadow-xs'
+                      : 'text-parchment-700 hover:bg-parchment-100'
+                  }`}
+                >
+                  <CalendarIcon className="w-3.5 h-3.5" />
+                  <span>Monthly</span>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -343,19 +366,19 @@ export default function HistoryPage({ onBack }) {
             <div className="py-20 text-center text-xs text-parchment-600 animate-pulse">
               Loading calendar schedules...
             </div>
-          ) : filteredItems.length === 0 ? (
+          ) : filteredItems.length === 0 || activeDaysList.length === 0 ? (
             <div className="py-16 bg-white rounded-3xl border border-dashed border-parchment-200 text-center p-6 space-y-2">
               <Sparkles className="w-8 h-8 text-terracotta/40 mx-auto" />
-              <h3 className="font-serif font-bold text-parchment-900">No events saved under this vibe yet</h3>
+              <h3 className="font-serif font-bold text-parchment-900">
+                {upcomingOnly ? 'No upcoming events saved' : 'No events saved under this vibe yet'}
+              </h3>
               <p className="text-xs text-parchment-700 max-w-xs mx-auto">
                 Head back to the deck to start exploring and picking your local vibes.
               </p>
             </div>
           ) : displayMode === 'weekly' ? (
             
-            /* ======================================================== */
-            /* WEEKLY VIEW                                             */
-            /* ======================================================== */
+            /* WEEKLY VIEW */
             <div className="space-y-4">
               {activeDaysList.map((day) => (
                 <div
@@ -430,9 +453,7 @@ export default function HistoryPage({ onBack }) {
             </div>
           ) : (
 
-            /* ======================================================== */
-            /* MONTHLY GRID VIEW                                       */
-            /* ======================================================== */
+            /* MONTHLY GRID VIEW */
             <div className="bg-white rounded-3xl border border-parchment-200 shadow-sm p-4 space-y-4">
               
               {/* MONTH NAVIGATOR HEADER */}
@@ -471,7 +492,7 @@ export default function HistoryPage({ onBack }) {
 
               {/* CALENDAR MONTH GRID */}
               <div className="grid grid-cols-7 gap-1 auto-rows-fr">
-                {monthlyGrid.map((cell, idx) => (
+                {monthlyGrid.map((cell) => (
                   <div
                     key={cell.isPadding ? cell.id : cell.dateKey}
                     className={`min-h-[80px] p-1.5 rounded-2xl border flex flex-col justify-between transition-colors ${
@@ -508,9 +529,7 @@ export default function HistoryPage({ onBack }) {
         </div>
       </main>
 
-      {/* ======================================================== */
-      /* EVENT DETAIL POP-UP MODAL OVERLAY                        */
-      /* ======================================================== */}
+      {/* EVENT DETAIL POP-UP MODAL OVERLAY */}
       {activeModalEvent && (() => {
         const ev = activeModalEvent.event || {};
         const venue = ev.venue_name || ev.venue || 'Local Venue';
