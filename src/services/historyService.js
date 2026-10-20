@@ -76,7 +76,8 @@ export function applyVectorDrift(eventVector, action, currentMood) {
   const weights = {
     'not_my_scene': -1.0,
     'maybe_later': 0.0,
-    'totally_vibe': 1.0
+    'totally_vibe': 1.0,
+    'interested': 1.0
   };
 
   const weight = weights[action] ?? 0.0;
@@ -106,7 +107,6 @@ export function applyVectorDrift(eventVector, action, currentMood) {
     };
   });
 
-  // Explicit console verification log
   console.groupCollapsed(`🎯 [Vector Drift Log] Action: "${action}" | Weight: ${weight}`);
   console.log('Event Data:', eventVector);
   console.log('Initial Mood Vector:', safeMood);
@@ -114,39 +114,59 @@ export function applyVectorDrift(eventVector, action, currentMood) {
   console.log('Final Computed Mood Vector:', updatedMood);
   console.groupEnd();
 
-  // Save updated vector back to local storage
   setCurrentMood(updatedMood);
   return updatedMood;
 }
 
 /**
- * Log a card swipe action to Supabase & LocalStorage asynchronously
+ * Log a card swipe action to Supabase & LocalStorage asynchronously with full vector snapshots.
  */
 export async function recordSwipe(action, event, userEmail = null, calculatedMood = null) {
   const clientId = getOrCreateClientId();
-  const userHash = userEmail ? await hashEmail(userEmail) : clientId;
-
-  // Use the pre-calculated mood if passed, otherwise compute it
+  const storedHash = localStorage.getItem('vivida_user_hash');
+  const userHash = userEmail ? (userEmail.length === 64 ? userEmail : await hashEmail(userEmail)) : (storedHash || clientId);
+  
   const newMoodVector = calculatedMood || applyVectorDrift(event, action);
+
+  const eEnergy = Number(event?.energy ?? event?.energy_vector ?? 0.5);
+  const eSocial = Number(event?.social ?? event?.social_vector ?? 0.5);
+  const eNovelty = Number(event?.novelty ?? event?.novelty_vector ?? 0.5);
+
+  const entryPayload = {
+    id: typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `hist_${Date.now()}`,
+    user_id: userHash,
+    event_id: String(event.id),
+    action: action,
+    created_at: new Date().toISOString(),
+    mood_snapshot: newMoodVector,
+    energy_vector: eEnergy,
+    social_vector: eSocial,
+    novelty_vector: eNovelty,
+    event_snapshot: {
+      title: event.title,
+      category: event.category,
+      venue_name: event.venue_name || event.venue,
+      address: event.address,
+      schedule: event.schedule,
+      date: event.date,
+      end_date: event.end_date,
+      is_free: event.is_free,
+      indoor_outdoor: event.indoor_outdoor,
+      image_url: event.image_url,
+      external_url: event.external_url
+    },
+    events: event
+  };
 
   // LocalStorage entry sync
   try {
     const localHistory = JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY) || '[]');
-    const existingIndex = localHistory.findIndex((item) => item.event_id === event.id);
-    const entry = {
-      id: typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `hist_${Date.now()}`,
-      user_id: userHash,
-      event_id: event.id,
-      action: action,
-      created_at: new Date().toISOString(),
-      events: event,
-      mood_snapshot: newMoodVector,
-    };
+    const existingIndex = localHistory.findIndex((item) => String(item.event_id) === String(event.id));
 
     if (existingIndex >= 0) {
-      localHistory[existingIndex] = entry;
+      localHistory[existingIndex] = entryPayload;
     } else {
-      localHistory.unshift(entry);
+      localHistory.unshift(entryPayload);
     }
     localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(localHistory));
   } catch (err) {
@@ -155,14 +175,20 @@ export async function recordSwipe(action, event, userEmail = null, calculatedMoo
 
   // Supabase DB persistence
   if (supabase) {
+    const dbRecord = {
+      user_id: userHash,
+      event_id: String(event.id),
+      action: action,
+      created_at: entryPayload.created_at,
+      mood_snapshot: newMoodVector,
+      energy_vector: eEnergy,
+      social_vector: eSocial,
+      novelty_vector: eNovelty,
+      event_snapshot: entryPayload.event_snapshot
+    };
+
     supabase.from('user_interactions').upsert(
-      {
-        user_id: userHash,
-        event_id: event.id,
-        action: action,
-        created_at: new Date().toISOString(),
-        mood_snapshot: newMoodVector,
-      },
+      dbRecord,
       { onConflict: 'user_id,event_id' }
     ).then(({ error }) => {
       if (error) console.error('Supabase write error:', error.message);
@@ -177,94 +203,139 @@ export async function recordSwipe(action, event, userEmail = null, calculatedMoo
  */
 export async function getUserHistory(userEmail = null) {
   const clientId = getOrCreateClientId();
-  const userHash = userEmail ? await hashEmail(userEmail) : clientId;
+  const storedHash = localStorage.getItem('vivida_user_hash');
+  const userHash = userEmail ? (userEmail.length === 64 ? userEmail : await hashEmail(userEmail)) : (storedHash || clientId);
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  let remoteInteractions = [];
 
   if (supabase) {
     try {
-      const { data, count, error } = await supabase
+      const { data, error } = await supabase
         .from('user_interactions')
-        .select(`
-          id,
-          action,
-          created_at,
-          events!inner (*)
-        `, { count: 'exact' })
+        .select('*')
         .eq('user_id', userHash)
-        .in('action', ['totally_vibe', 'maybe_later'])
+        .in('action', ['totally_vibe', 'maybe_later', 'interested'])
         .order('created_at', { ascending: false })
         .range(0, 999);
 
       if (!error && data) {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
-        return data.filter((item) => {
-          const rawDate = item.events?.end_date || item.events?.date;
-          if (!rawDate) return true;
-
-          const eventDate = new Date(rawDate);
-          if (isNaN(eventDate.getTime())) return true;
-
-          return eventDate >= today;
-        });
+        remoteInteractions = data;
       }
     } catch (err) {
-      console.warn('Supabase lookup failed, falling back to local history:', err);
+      console.warn('Supabase history lookup failed:', err);
     }
   }
 
-  // LocalStorage Fallback
-  try {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const localHistory = JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY) || '[]');
+  const eventIds = [...new Set(remoteInteractions.map((i) => i.event_id))];
+  let activeEventsMap = new Map();
 
-    return localHistory.filter((item) => {
-      const isMatch = item.user_id === userHash && ['totally_vibe', 'maybe_later'].includes(item.action);
-      const rawDate = item.events?.end_date || item.events?.date;
-      if (!isMatch) return false;
-      if (!rawDate) return true;
+  if (eventIds.length > 0 && supabase) {
+    try {
+      const { data: eventsData } = await supabase
+        .from('events')
+        .select('*')
+        .in('id', eventIds);
 
-      const eventDate = new Date(rawDate);
-      if (isNaN(eventDate.getTime())) return true;
-
-      return eventDate >= today;
-    });
-  } catch (err) {
-    return [];
+      if (eventsData) {
+        activeEventsMap = new Map(eventsData.map((e) => [String(e.id), e]));
+      }
+    } catch (err) {
+      console.warn('Failed to fetch active events for history hydration:', err);
+    }
   }
+
+  let localHistory = [];
+  try {
+    localHistory = JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY) || '[]');
+  } catch (err) {
+    console.warn('Failed to read vibe_history:', err);
+  }
+
+  const combinedMap = new Map();
+
+  localHistory.forEach((item) => {
+    if (['totally_vibe', 'maybe_later', 'interested'].includes(item.action)) {
+      combinedMap.set(String(item.event_id || item.events?.id), {
+        ...item,
+        events: item.events || item.event_snapshot || {}
+      });
+    }
+  });
+
+  remoteInteractions.forEach((item) => {
+    const activeEvent = activeEventsMap.get(String(item.event_id));
+    combinedMap.set(String(item.event_id), {
+      ...item,
+      events: activeEvent || item.event_snapshot || { id: item.event_id }
+    });
+  });
+
+  return Array.from(combinedMap.values()).filter((item) => {
+    const rawDate = item.events?.end_date || item.events?.date || item.event_snapshot?.end_date || item.event_snapshot?.date;
+    if (!rawDate) return true;
+    const eventDate = new Date(rawDate);
+    return isNaN(eventDate.getTime()) || eventDate >= today;
+  });
 }
 
 /**
  * Retrieves past user interactions corresponding to current or upcoming events.
- * Used to preserve previous decisions across local history resets.
  */
-export async function getFutureUserInteractions(userIdentifier) {
-  if (!supabase || !userIdentifier) return [];
+export async function getFutureUserInteractions(userIdentifier = null) {
+  if (!supabase) return [];
+
+  const storedHash = localStorage.getItem('vivida_user_hash');
+  const activeKey = userIdentifier || storedHash || getOrCreateClientId();
 
   const now = new Date();
   const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
   try {
-    const { data, error } = await supabase
+    const { data: interactions, error: intError } = await supabase
       .from('user_interactions')
-      .select(`
-        id,
-        action,
-        created_at,
-        event_id,
-        events!inner (*)
-      `)
-      .eq('user_id', userIdentifier)
+      .select('*')
+      .eq('user_id', activeKey)
       .order('created_at', { ascending: false });
 
-    if (error || !data) return [];
+    if (intError || !interactions || interactions.length === 0) return [];
 
-    return data.filter((item) => {
-      const schedule = item.events?.schedule;
-      if (!schedule) return true;
-      return String(schedule).includes(todayStr) || String(schedule) >= todayStr;
-    });
+    const eventIds = [...new Set(interactions.map((i) => i.event_id))];
+    const { data: events } = await supabase
+      .from('events')
+      .select('*')
+      .in('id', eventIds);
+
+    const eventMap = events ? new Map(events.map((e) => [String(e.id), e])) : new Map();
+
+    const seenEventIds = new Set();
+    const futureInteractions = [];
+
+    for (const item of interactions) {
+      const eventIdStr = String(item.event_id);
+      if (seenEventIds.has(eventIdStr)) continue;
+
+      const activeEvent = eventMap.get(eventIdStr);
+      const evData = activeEvent || item.event_snapshot || {};
+
+      const schedule = evData.schedule;
+      const endRaw = evData.end_date || evData.date;
+      const isFuture = !schedule 
+        ? (!endRaw || String(endRaw) >= todayStr)
+        : (String(schedule).includes(todayStr) || String(schedule) >= todayStr);
+
+      if (isFuture) {
+        seenEventIds.add(eventIdStr);
+        futureInteractions.push({
+          ...item,
+          events: evData
+        });
+      }
+    }
+
+    return futureInteractions;
   } catch (err) {
     console.warn('Failed to retrieve future user interactions:', err);
     return [];

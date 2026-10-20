@@ -8,7 +8,8 @@ import {
   Flame, 
   Bookmark, 
   ShipWheel,
-  RotateCcw
+  RotateCcw,
+  ShieldCheck
 } from 'lucide-react';
 import MoodSliders from './MoodSliders';
 
@@ -19,6 +20,7 @@ export default function Header({
   onResetLocalHistory,
   vibeCount = 0, 
   savedCount = 0, 
+  hasUserHash = false,
   city = "Tacoma"
 }) {
   const [isSlidersOpen, setIsSlidersOpen] = useState(false);
@@ -57,23 +59,36 @@ export default function Header({
       <div className="max-w-md mx-auto px-4 py-2.5 flex flex-col gap-2.5">
         
         {/* TIER 1: TOPMOST BRANDING HEADER */}
-        <div className="flex items-center justify-center gap-2 pt-0.5">
-          <div className="w-7 h-7 rounded-xl bg-terracotta text-white flex items-center justify-center shadow-xs shrink-0">
-            <ShipWheel className="w-4 h-4" />
-          </div>
+        <div className="flex items-center justify-between pt-0.5">
           <div className="flex items-center gap-2">
-            <span className="font-serif font-bold text-xl tracking-tight text-parchment-900">
-              Vivida
-            </span>
+            <div className="w-7 h-7 rounded-xl bg-terracotta text-white flex items-center justify-center shadow-xs shrink-0">
+              <ShipWheel className="w-4 h-4" />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="font-serif font-bold text-xl tracking-tight text-parchment-900">
+                Vivida
+              </span>
 
-            {/* Permanent Marker Graffiti Tag */}
-            <span 
-              style={{ fontFamily: "'Permanent Marker', cursive" }}
-              className="inline-block transform -rotate-3 text-terracotta text-base tracking-wide leading-none select-none drop-shadow-2xs"
-            >
-              {city}
-            </span>
+              {/* Permanent Marker Tag */}
+              <span 
+                style={{ fontFamily: "'Permanent Marker', cursive" }}
+                className="inline-block transform -rotate-3 text-terracotta text-base tracking-wide leading-none select-none drop-shadow-2xs"
+              >
+                {city}
+              </span>
+            </div>
           </div>
+
+          {/* Cloud Sync Status Indicator */}
+          {hasUserHash && (
+            <div 
+              className="flex items-center gap-1 text-[10px] text-emerald-700 bg-emerald-100/80 px-2 py-0.5 rounded-full font-semibold border border-emerald-200"
+              title="Cloud Sync Active (Zero-PII Hashed)"
+            >
+              <ShieldCheck className="w-3 h-3 text-emerald-600" />
+              <span>Synced</span>
+            </div>
+          )}
         </div>
 
         {/* TIER 2: ACTION CONTROLS ROW */}
@@ -128,18 +143,10 @@ export default function Header({
 
             {totalCount > 0 && (
               <div className="flex items-center gap-0.5 ml-0.5">
-                {vibeCount > 0 && (
-                  <span className="flex items-center gap-0.5 bg-emerald-600 text-white text-[9px] font-bold px-1.5 py-0.2 rounded-full">
-                    <Flame className="w-2.5 h-2.5 fill-current" />
-                    {vibeCount}
-                  </span>
-                )}
-                {savedCount > 0 && (
-                  <span className="flex items-center gap-0.5 bg-amber-600 text-white text-[9px] font-bold px-1.5 py-0.2 rounded-full">
-                    <Bookmark className="w-2.5 h-2.5 fill-current" />
-                    {savedCount}
-                  </span>
-                )}
+                <span className="flex items-center gap-0.5 bg-emerald-600 text-white text-[9px] font-bold px-1.5 py-0.2 rounded-full">
+                  <Flame className="w-2.5 h-2.5 fill-current" />
+                  {totalCount}
+                </span>
               </div>
             )}
           </button>

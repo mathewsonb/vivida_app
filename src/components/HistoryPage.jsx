@@ -74,16 +74,19 @@ export default function HistoryPage({ onBack }) {
     }
   };
 
-  // Safe schedule extractor
+  // Safe schedule extractor with JSONB Snapshot Fallback
   const getScheduleList = (event) => {
     let raw = event?.schedule;
+    if (!raw && (event?.date || event?.start_time)) {
+      return [{ dateStr: event.date || event.start_time || '', url: event.external_url || '#' }];
+    }
     if (!raw) return [];
     if (typeof raw === 'string') {
       try {
         raw = JSON.parse(raw);
         if (typeof raw === 'string') raw = JSON.parse(raw);
       } catch (err) {
-        return [];
+        return [{ dateStr: raw, url: event.external_url || '#' }];
       }
     }
     if (Array.isArray(raw)) {
@@ -104,13 +107,19 @@ export default function HistoryPage({ onBack }) {
     return [];
   };
 
-  // Map events to date keys (YYYY-MM-DD) with upcoming filtering
+  // Map events to date keys (YYYY-MM-DD) with upcoming filtering and snapshot safety
   const eventsByDate = useMemo(() => {
     const map = {};
 
     filteredItems.forEach((item) => {
-      const ev = item.events || {};
-      const schedules = getScheduleList(ev);
+      // Fallback to event_snapshot if original event row was pruned
+      const ev = item.events || item.event_snapshot || {};
+      let schedules = getScheduleList(ev);
+
+      if (schedules.length === 0) {
+        const fallbackDate = item.created_at ? item.created_at.split('T')[0] : todayStr;
+        schedules = [{ dateStr: fallbackDate, url: ev.external_url || '#' }];
+      }
 
       schedules.forEach((sched) => {
         const rawDate = String(sched.dateStr).trim();
@@ -121,7 +130,7 @@ export default function HistoryPage({ onBack }) {
         if (isoMatches && isoMatches.length > 0) {
           dateKey = isoMatches[0];
         } else if (rawDate) {
-          // 2. Fallback to standard Date parsing for "Oct 17, 2026", etc.
+          // 2. Fallback to standard Date parsing
           const parsed = new Date(rawDate);
           if (!isNaN(parsed.getTime())) {
             const y = parsed.getFullYear();
@@ -131,19 +140,21 @@ export default function HistoryPage({ onBack }) {
           }
         }
 
-        // Apply "Upcoming Only" Filter constraint if active
-        if (dateKey) {
-          if (upcomingOnly && dateKey < todayStr) return;
-
-          if (!map[dateKey]) map[dateKey] = [];
-          map[dateKey].push({
-            historyId: item.id,
-            event: ev,
-            url: sched.url,
-            dateKey,
-            action: item.action
-          });
+        if (!dateKey) {
+          dateKey = todayStr;
         }
+
+        // Apply "Upcoming Only" Filter constraint if active
+        if (upcomingOnly && dateKey < todayStr) return;
+
+        if (!map[dateKey]) map[dateKey] = [];
+        map[dateKey].push({
+          historyId: item.id,
+          event: ev,
+          url: sched.url,
+          dateKey,
+          action: item.action
+        });
       });
     });
 
@@ -211,7 +222,7 @@ export default function HistoryPage({ onBack }) {
 
     let text = "🎉 Check out these local event vibes I found!\n\n";
     itemsToShare.forEach((item, index) => {
-      const ev = item.events || {};
+      const ev = item.events || item.event_snapshot || {};
       const venue = ev.venue_name || ev.venue || 'Local Venue';
       const schedules = getScheduleList(ev);
       const mainLink = schedules[0]?.url || ev.external_url || '';
@@ -398,7 +409,7 @@ export default function HistoryPage({ onBack }) {
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {day.entries.map((entry, idx) => {
-                      const ev = entry.event;
+                      const ev = entry.event || {};
                       const venue = ev.venue_name || ev.venue || 'Local Venue';
                       const isSelected = selectedIds.includes(entry.historyId);
 
@@ -431,7 +442,7 @@ export default function HistoryPage({ onBack }) {
                           <div className="flex-1 min-w-0 flex flex-col justify-between space-y-1">
                             <div>
                               <h4 className="font-serif font-bold text-xs text-parchment-900 leading-snug line-clamp-1 pr-6">
-                                {ev.title}
+                                {ev.title || 'Saved Event'}
                               </h4>
                               <p className="text-[11px] text-parchment-600 flex items-center gap-1 line-clamp-1 mt-0.5">
                                 <MapPin className="w-3 h-3 shrink-0" />
@@ -513,9 +524,9 @@ export default function HistoryPage({ onBack }) {
                               key={`${entry.historyId}-${eIdx}`}
                               onClick={() => setActiveModalEvent({ ...entry, dateKey: cell.dateKey })}
                               className="w-full text-left text-[10px] leading-tight font-bold text-terracotta bg-terracotta/10 hover:bg-terracotta hover:text-white px-1.5 py-0.5 rounded-lg truncate transition-all"
-                              title={entry.event.title}
+                              title={entry.event?.title || 'Saved Event'}
                             >
-                              {entry.event.title}
+                              {entry.event?.title || 'Saved Event'}
                             </button>
                           ))}
                         </div>
@@ -568,7 +579,7 @@ export default function HistoryPage({ onBack }) {
               <div className="p-6 space-y-4 flex-1">
                 <div>
                   <h3 className="font-serif font-bold text-xl text-parchment-900 leading-tight">
-                    {ev.title}
+                    {ev.title || 'Saved Event'}
                   </h3>
                   <a
                     href={mapUrl}
