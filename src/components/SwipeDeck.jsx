@@ -21,9 +21,9 @@ function sanitizeUrl(url) {
 export default function SwipeDeck({ events, mood, onSwipe, onReset }) {
   if (!events || events.length === 0) {
     return (
-      <div className="h-80 rounded-3xl border-2 border-dashed border-parchment-200 flex flex-col items-center justify-center p-6 text-center bg-parchment-100/50 space-y-3">
-        <Sparkles className="w-10 h-10 text-terracotta/40 mb-1" />
-        <h3 className="font-serif text-lg font-bold text-parchment-900">
+      <div className="h-72 rounded-3xl border-2 border-dashed border-parchment-200 flex flex-col items-center justify-center p-6 text-center bg-parchment-100/50 space-y-3">
+        <Sparkles className="w-9 h-9 text-terracotta/40 mb-1" />
+        <h3 className="font-serif text-base font-bold text-parchment-900">
           You've explored all local vibes
         </h3>
         <p className="text-xs text-parchment-800 max-w-xs leading-relaxed">
@@ -35,7 +35,7 @@ export default function SwipeDeck({ events, mood, onSwipe, onReset }) {
             onClick={onReset}
             className="mt-2 inline-flex items-center gap-2 bg-terracotta text-white font-bold px-4 py-2 rounded-2xl hover:bg-terracotta-hover transition-transform active:scale-95 text-xs shadow-md"
           >
-            <RotateCcw className="w-4 h-4" />
+            <RotateCcw className="w-3.5 h-3.5" />
             <span>Reset Deck & Clear History</span>
           </button>
         )}
@@ -104,10 +104,8 @@ export default function SwipeDeck({ events, mood, onSwipe, onReset }) {
     const animY = targetY !== 0 ? animate(y, targetY, { duration: 0.18 }) : Promise.resolve();
 
     Promise.all([animX, animY]).then(() => {
-      // 1. Immediately reset position variables
       x.set(0);
       y.set(0);
-      // 2. Trigger parent state update (moves to next card)
       onSwipe?.(action, activeEvent);
     });
   };
@@ -207,7 +205,7 @@ export default function SwipeDeck({ events, mood, onSwipe, onReset }) {
     : sanitizeUrl(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(venue + ' ' + (activeEvent.address || 'Tacoma, WA'))}`);
 
   return (
-    <div className="relative w-full max-w-md mx-auto my-auto pt-8">
+    <div className="relative w-full max-w-md mx-auto my-auto pt-2">
       {/* TOTALLY MY VIBE BADGE */}
       <motion.div 
         style={{ 
@@ -251,7 +249,7 @@ export default function SwipeDeck({ events, mood, onSwipe, onReset }) {
         MAYBE LATER
       </motion.div>
 
-      {/* INTERACTIVE SWIPE CARD */}
+      {/* INTERACTIVE SWIPE CARD WITH VIEWPORT HEIGHT CONSTRAINTS */}
       <AnimatePresence mode="popLayout">
         <motion.div
           key={activeEvent.id || activeEvent.title || 'active-card'}
@@ -265,15 +263,16 @@ export default function SwipeDeck({ events, mood, onSwipe, onReset }) {
           dragSnapToOrigin
           dragElastic={0.6}
           onDragEnd={handleDragEnd}
-          className="relative w-full h-[480px] sm:h-[520px] bg-white border border-parchment-200 rounded-3xl shadow-xl flex flex-col justify-between cursor-grab active:cursor-grabbing select-none overflow-hidden touch-pan-y transform-gpu"
+          className="relative w-full h-[58dvh] min-h-[380px] max-h-[480px] bg-white border border-parchment-200 rounded-3xl shadow-xl flex flex-col justify-between cursor-grab active:cursor-grabbing select-none overflow-hidden touch-pan-y transform-gpu"
         >
           <div className="flex-1 flex flex-col justify-between overflow-hidden pointer-events-none">
-            <div>
-              <div className="relative h-44 sm:h-48 w-full bg-parchment-100 overflow-hidden shrink-0">
+            <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+              {/* COMPACT IMAGE CONTAINER */}
+              <div className="relative h-32 sm:h-36 w-full bg-parchment-100 overflow-hidden shrink-0">
                 <img
                   src={activeEvent.image_url || FALLBACK_IMAGE}
                   alt={activeEvent.title || 'Event image'}
-                  referrerPolicy='no-referrer'
+                  referrerPolicy="no-referrer"
                   onError={(e) => {
                     e.target.onerror = null;
                     e.target.src = FALLBACK_IMAGE;
@@ -282,29 +281,31 @@ export default function SwipeDeck({ events, mood, onSwipe, onReset }) {
                 />
                 <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20 pointer-events-none" />
 
-                <div className="absolute top-4 left-4 right-4 flex justify-between items-center z-10 pointer-events-none">
-                  <span className="text-[11px] font-semibold uppercase tracking-wider bg-black/50 backdrop-blur-md text-white px-2.5 py-1 rounded-full border border-white/20">
+                <div className="absolute top-3 left-3 right-3 flex justify-between items-center z-10 pointer-events-none">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider bg-black/50 backdrop-blur-md text-white px-2 py-0.5 rounded-full border border-white/20">
                     {activeEvent.category || 'Local Experience'}
                   </span>
-                  <div className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold shadow-md transition-colors ${getBadgeStyle(currentMatchScore)}`}>
-                    <Flame className="w-3.5 h-3.5 fill-white" />
+                  <div className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold shadow-md transition-colors ${getBadgeStyle(currentMatchScore)}`}>
+                    <Flame className="w-3 h-3 fill-white" />
                     {currentMatchScore}% Match
                   </div>
                 </div>
               </div>
 
-              <div className="p-5 space-y-2">
-                <h2 className="font-serif text-xl font-bold text-parchment-900 leading-tight">
+              {/* CARD DETAILS WITH COMPACT SCROLLING */}
+              <div className="p-3.5 space-y-1.5 overflow-y-auto no-scrollbar flex-1">
+                <h2 className="font-serif text-base sm:text-lg font-bold text-parchment-900 leading-tight">
                   {activeEvent.title}
                 </h2>
-                <p className="text-xs text-parchment-800/80 leading-relaxed line-clamp-4">
+                <p className="text-[11px] sm:text-xs text-parchment-800/80 leading-relaxed line-clamp-3">
                   {activeEvent.description}
                 </p>
               </div>
             </div>
 
-            <div className="px-5 pb-4 space-y-3">
-              <div className="space-y-1.5 border-t border-parchment-100 pt-3 text-xs text-parchment-800">
+            {/* CARD FOOTER AND REGISTRATION SCHEDULE */}
+            <div className="px-3.5 pb-3 space-y-2 shrink-0 bg-white">
+              <div className="space-y-1 border-t border-parchment-100 pt-2 text-[11px] text-parchment-800">
                 {mapUrl && mapUrl !== '#' && (
                   <a 
                     href={mapUrl}
@@ -312,29 +313,29 @@ export default function SwipeDeck({ events, mood, onSwipe, onReset }) {
                     rel="noopener noreferrer"
                     onPointerDown={(e) => e.stopPropagation()}
                     onClick={(e) => e.stopPropagation()}
-                    className="pointer-events-auto flex items-center gap-2 text-terracotta font-medium hover:underline truncate"
+                    className="pointer-events-auto flex items-center gap-1.5 text-terracotta font-medium hover:underline truncate"
                   >
-                    <MapPin className="w-4 h-4 shrink-0 text-terracotta" />
+                    <MapPin className="w-3.5 h-3.5 shrink-0 text-terracotta" />
                     <span className="truncate">{venue} {activeEvent.address ? `• ${activeEvent.address}` : ''}</span>
                   </a>
                 )}
 
                 {activeEvent.price_info && (
-                  <div className="flex items-center gap-2 text-parchment-700">
-                    <Tag className="w-4 h-4 text-terracotta shrink-0" />
+                  <div className="flex items-center gap-1.5 text-parchment-700">
+                    <Tag className="w-3.5 h-3.5 text-terracotta shrink-0" />
                     <span>{activeEvent.price_info}</span>
                   </div>
                 )}
               </div>
 
-              <div className="mt-2 space-y-1.5">
-                <div className="flex items-center gap-1.5 text-[11px] font-medium text-parchment-700">
-                  <Calendar className="w-3.5 h-3.5 text-terracotta" />
+              <div className="space-y-1">
+                <div className="flex items-center gap-1 text-[10px] font-medium text-parchment-700">
+                  <Calendar className="w-3 h-3 text-terracotta" />
                   <span>Select Date to Register:</span>
                 </div>
 
                 <div 
-                  className="pointer-events-auto flex items-center gap-2 overflow-x-auto pb-1 pt-0.5 no-scrollbar touch-pan-x"
+                  className="pointer-events-auto flex items-center gap-1.5 overflow-x-auto pb-0.5 pt-0.5 no-scrollbar touch-pan-x"
                   onPointerDown={(e) => e.stopPropagation()}
                 >
                   {parsedSchedule.length > 0 ? (
@@ -346,14 +347,14 @@ export default function SwipeDeck({ events, mood, onSwipe, onReset }) {
                         rel="noopener noreferrer"
                         onPointerDown={(e) => e.stopPropagation()}
                         onClick={(e) => e.stopPropagation()}
-                        className="shrink-0 flex items-center gap-1.5 bg-parchment-100 hover:bg-terracotta hover:text-white text-parchment-900 border border-parchment-200 font-semibold py-1.5 px-3 rounded-xl text-xs shadow-sm transition-all"
+                        className="shrink-0 flex items-center gap-1 bg-parchment-100 hover:bg-terracotta hover:text-white text-parchment-900 border border-parchment-200 font-semibold py-1 px-2.5 rounded-lg text-[11px] shadow-xs transition-all"
                       >
                         <span>{item.label}</span>
-                        <ExternalLink className="w-3 h-3 opacity-70" />
+                        <ExternalLink className="w-2.5 h-2.5 opacity-70" />
                       </a>
                     ))
                   ) : (
-                    <span className="text-xs text-parchment-700 italic">No scheduled dates available</span>
+                    <span className="text-[11px] text-parchment-700 italic">No scheduled dates available</span>
                   )}
                 </div>
               </div>
