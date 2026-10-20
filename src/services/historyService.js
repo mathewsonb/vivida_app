@@ -135,7 +135,7 @@ export async function recordSwipe(action, event, userEmail = null, calculatedMoo
   const entryPayload = {
     id: typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `hist_${Date.now()}`,
     user_id: userHash,
-    event_id: String(event.id),
+    event_id: String(event.id).trim().toLowerCase(),
     action: action,
     created_at: new Date().toISOString(),
     mood_snapshot: newMoodVector,
@@ -161,7 +161,7 @@ export async function recordSwipe(action, event, userEmail = null, calculatedMoo
   // LocalStorage entry sync
   try {
     const localHistory = JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY) || '[]');
-    const existingIndex = localHistory.findIndex((item) => String(item.event_id) === String(event.id));
+    const existingIndex = localHistory.findIndex((item) => String(item.event_id).trim().toLowerCase() === String(event.id).trim().toLowerCase());
 
     if (existingIndex >= 0) {
       localHistory[existingIndex] = entryPayload;
@@ -177,7 +177,7 @@ export async function recordSwipe(action, event, userEmail = null, calculatedMoo
   if (supabase) {
     const dbRecord = {
       user_id: userHash,
-      event_id: String(event.id),
+      event_id: String(event.id).trim().toLowerCase(),
       action: action,
       created_at: entryPayload.created_at,
       mood_snapshot: newMoodVector,
@@ -206,8 +206,8 @@ export async function getUserHistory(userEmail = null) {
   const storedHash = localStorage.getItem('vivida_user_hash');
   const userHash = userEmail ? (userEmail.length === 64 ? userEmail : await hashEmail(userEmail)) : (storedHash || clientId);
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
   let remoteInteractions = [];
 
@@ -218,8 +218,7 @@ export async function getUserHistory(userEmail = null) {
         .select('*')
         .eq('user_id', userHash)
         .in('action', ['totally_vibe', 'maybe_later', 'interested'])
-        .order('created_at', { ascending: false })
-        .range(0, 999);
+        .order('created_at', { ascending: false });
 
       if (!error && data) {
         remoteInteractions = data;
@@ -229,7 +228,7 @@ export async function getUserHistory(userEmail = null) {
     }
   }
 
-  const eventIds = [...new Set(remoteInteractions.map((i) => i.event_id))];
+  const eventIds = [...new Set(remoteInteractions.map((i) => String(i.event_id).trim().toLowerCase()))];
   let activeEventsMap = new Map();
 
   if (eventIds.length > 0 && supabase) {
@@ -240,7 +239,9 @@ export async function getUserHistory(userEmail = null) {
         .in('id', eventIds);
 
       if (eventsData) {
-        activeEventsMap = new Map(eventsData.map((e) => [String(e.id), e]));
+        eventsData.forEach((e) => {
+          activeEventsMap.set(String(e.id).trim().toLowerCase(), e);
+        });
       }
     } catch (err) {
       console.warn('Failed to fetch active events for history hydration:', err);
@@ -256,26 +257,43 @@ export async function getUserHistory(userEmail = null) {
 
   const combinedMap = new Map();
 
+  // 1. Process Local History
   localHistory.forEach((item) => {
     if (['totally_vibe', 'maybe_later', 'interested'].includes(item.action)) {
-      combinedMap.set(String(item.event_id || item.events?.id), {
-        ...item,
-        events: item.events || item.event_snapshot || {}
-      });
+      const rawId = item.event_id || item.events?.id || item.id;
+      if (rawId) {
+        const idKey = String(rawId).trim().toLowerCase();
+        combinedMap.set(idKey, {
+          ...item,
+          events: item.events || item.event_snapshot || {}
+        });
+      }
     }
   });
 
+  // 2. Process Remote Database History
   remoteInteractions.forEach((item) => {
-    const activeEvent = activeEventsMap.get(String(item.event_id));
-    combinedMap.set(String(item.event_id), {
+    const idKey = String(item.event_id).trim().toLowerCase();
+    const activeEvent = activeEventsMap.get(idKey);
+    combinedMap.set(idKey, {
       ...item,
       events: activeEvent || item.event_snapshot || { id: item.event_id }
     });
   });
 
+  // 3. Filter out expired dates with safe local midnight parsing
   return Array.from(combinedMap.values()).filter((item) => {
-    const rawDate = item.events?.end_date || item.events?.date || item.event_snapshot?.end_date || item.event_snapshot?.date;
+    const ev = item.events || item.event_snapshot;
+    const rawDate = ev?.end_date || ev?.date;
     if (!rawDate) return true;
+
+    const dateMatch = String(rawDate).match(/\d{4}-\d{2}-\d{2}/);
+    if (dateMatch) {
+      const [y, m, d] = dateMatch[0].split('-').map(Number);
+      const eventDate = new Date(y, m - 1, d);
+      return eventDate >= today;
+    }
+
     const eventDate = new Date(rawDate);
     return isNaN(eventDate.getTime()) || eventDate >= today;
   });
@@ -302,19 +320,24 @@ export async function getFutureUserInteractions(userIdentifier = null) {
 
     if (intError || !interactions || interactions.length === 0) return [];
 
-    const eventIds = [...new Set(interactions.map((i) => i.event_id))];
+    const eventIds = [...new Set(interactions.map((i) => String(i.event_id).trim().toLowerCase()))];
     const { data: events } = await supabase
       .from('events')
       .select('*')
       .in('id', eventIds);
 
-    const eventMap = events ? new Map(events.map((e) => [String(e.id), e])) : new Map();
+    const eventMap = new Map();
+    if (events) {
+      events.forEach((e) => {
+        eventMap.set(String(e.id).trim().toLowerCase(), e);
+      });
+    }
 
     const seenEventIds = new Set();
     const futureInteractions = [];
 
     for (const item of interactions) {
-      const eventIdStr = String(item.event_id);
+      const eventIdStr = String(item.event_id).trim().toLowerCase();
       if (seenEventIds.has(eventIdStr)) continue;
 
       const activeEvent = eventMap.get(eventIdStr);
