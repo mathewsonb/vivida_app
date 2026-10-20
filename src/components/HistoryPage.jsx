@@ -53,47 +53,6 @@ export default function HistoryPage({ onBack }) {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   }, []);
 
-  // Compute counts for tab badges directly from history items
-  const tabCounts = useMemo(() => {
-    let vibeCount = 0;
-    let laterCount = 0;
-
-    historyItems.forEach((item) => {
-      if (item.action === 'totally_vibe' || item.action === 'interested') {
-        vibeCount++;
-      } else if (item.action === 'maybe_later') {
-        laterCount++;
-      }
-    });
-
-    return { vibeCount, laterCount };
-  }, [historyItems]);
-
-  const filteredItems = useMemo(() => {
-    return historyItems.filter((item) => {
-      if (activeTab === 'totally_vibe') {
-        return item.action === 'totally_vibe' || item.action === 'interested';
-      }
-      return item.action === activeTab;
-    });
-  }, [historyItems, activeTab]);
-
-  // Selection handlers
-  const toggleSelect = (id, e) => {
-    if (e) e.stopPropagation();
-    setSelectedIds((prev) => 
-      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
-    );
-  };
-
-  const selectAll = () => {
-    if (selectedIds.length === filteredItems.length) {
-      setSelectedIds([]);
-    } else {
-      setSelectedIds(filteredItems.map((item) => item.id || item.historyId));
-    }
-  };
-
   // Safe schedule extractor with JSONB Snapshot Fallback
   const getScheduleList = (event) => {
     let raw = event?.schedule;
@@ -127,11 +86,12 @@ export default function HistoryPage({ onBack }) {
     return [];
   };
 
-  // Map events to date keys (YYYY-MM-DD) with upcoming filtering and snapshot safety
-  const eventsByDate = useMemo(() => {
-    const map = {};
+  // 1. Build eventsByDate for ALL items first so tab counters equal exact rendered card totals
+  const allEventsByDate = useMemo(() => {
+    const map = { totally_vibe: {}, maybe_later: {} };
 
-    filteredItems.forEach((item) => {
+    historyItems.forEach((item) => {
+      const tabKey = (item.action === 'totally_vibe' || item.action === 'interested') ? 'totally_vibe' : 'maybe_later';
       const ev = item.events || item.event_snapshot || {};
       let schedules = getScheduleList(ev);
 
@@ -144,12 +104,11 @@ export default function HistoryPage({ onBack }) {
         const rawDate = String(sched.dateStr).trim();
         let dateKey = null;
 
-        // 1. Try ISO YYYY-MM-DD match
+        // Try ISO YYYY-MM-DD match
         const isoMatches = rawDate.match(/\d{4}-\d{2}-\d{2}/g);
         if (isoMatches && isoMatches.length > 0) {
           dateKey = isoMatches[0];
         } else if (rawDate) {
-          // 2. Fallback to standard Date parsing safely avoiding timezone drop-offs
           const parsed = new Date(rawDate);
           if (!isNaN(parsed.getTime())) {
             const y = parsed.getFullYear();
@@ -159,15 +118,13 @@ export default function HistoryPage({ onBack }) {
           }
         }
 
-        if (!dateKey) {
-          dateKey = todayStr;
-        }
+        if (!dateKey) dateKey = todayStr;
 
         // Apply "Upcoming Only" Filter constraint if active
         if (upcomingOnly && dateKey < todayStr) return;
 
-        if (!map[dateKey]) map[dateKey] = [];
-        map[dateKey].push({
+        if (!map[tabKey][dateKey]) map[tabKey][dateKey] = [];
+        map[tabKey][dateKey].push({
           historyId: item.id || item.event_id,
           event: ev,
           url: sched.url,
@@ -178,11 +135,32 @@ export default function HistoryPage({ onBack }) {
     });
 
     return map;
-  }, [filteredItems, upcomingOnly, todayStr]);
+  }, [historyItems, upcomingOnly, todayStr]);
 
-  // Active dates sorted chronologically
+  // 2. Compute exact rendered card totals directly from the expanded date buckets
+  const tabRenderedCounts = useMemo(() => {
+    let vibeCount = 0;
+    let laterCount = 0;
+
+    Object.values(allEventsByDate.totally_vibe).forEach((entries) => {
+      vibeCount += entries.length;
+    });
+
+    Object.values(allEventsByDate.maybe_later).forEach((entries) => {
+      laterCount += entries.length;
+    });
+
+    return { vibeCount, laterCount };
+  }, [allEventsByDate]);
+
+  // Active tab's events mapped by date
+  const activeEventsByDate = useMemo(() => {
+    return allEventsByDate[activeTab] || {};
+  }, [allEventsByDate, activeTab]);
+
+  // Active days sorted chronologically
   const activeDaysList = useMemo(() => {
-    const dates = Object.keys(eventsByDate).sort();
+    const dates = Object.keys(activeEventsByDate).sort();
 
     return dates.map((dateKey) => {
       const [y, m, d] = dateKey.split('-').map(Number);
@@ -192,10 +170,10 @@ export default function HistoryPage({ onBack }) {
         dateObj,
         dateKey,
         isToday: dateKey === todayStr,
-        entries: eventsByDate[dateKey] || []
+        entries: activeEventsByDate[dateKey] || []
       };
     }).filter((day) => day.entries.length > 0);
-  }, [eventsByDate, todayStr]);
+  }, [activeEventsByDate, todayStr]);
 
   // Monthly calendar grid generator
   const monthlyGrid = useMemo(() => {
@@ -220,7 +198,7 @@ export default function HistoryPage({ onBack }) {
           isPadding: false,
           dayNumber: day,
           dateKey,
-          entries: eventsByDate[dateKey] || []
+          entries: activeEventsByDate[dateKey] || []
         });
       }
 
@@ -229,7 +207,28 @@ export default function HistoryPage({ onBack }) {
       console.error("Error generating monthly grid:", err);
       return [];
     }
-  }, [currentMonthDate, eventsByDate]);
+  }, [currentMonthDate, activeEventsByDate]);
+
+  // Selection handlers
+  const toggleSelect = (id, e) => {
+    if (e) e.stopPropagation();
+    setSelectedIds((prev) => 
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+    );
+  };
+
+  const selectAll = () => {
+    const activeEntries = [];
+    Object.values(activeEventsByDate).forEach((list) => {
+      list.forEach((item) => activeEntries.push(item.historyId));
+    });
+
+    if (selectedIds.length === activeEntries.length) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(activeEntries);
+    }
+  };
 
   // Share handler
   const handleShare = async (specificItem = null) => {
@@ -293,7 +292,7 @@ export default function HistoryPage({ onBack }) {
           {/* TOP CONTROLS BAR */}
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
             
-            {/* VIBE FILTER TABS */}
+            {/* VIBE FILTER TABS WITH DIRECTLY RENDERED COUNTS */}
             <div className="flex items-center gap-2 bg-parchment-100 p-1 rounded-2xl border border-parchment-200 flex-1">
               <button
                 onClick={() => { setActiveTab('totally_vibe'); setSelectedIds([]); }}
@@ -304,7 +303,7 @@ export default function HistoryPage({ onBack }) {
                 }`}
               >
                 <Flame className="w-3.5 h-3.5" />
-                <span>For Now ({tabCounts.vibeCount})</span>
+                <span>For Now ({tabRenderedCounts.vibeCount})</span>
               </button>
 
               <button
@@ -316,13 +315,12 @@ export default function HistoryPage({ onBack }) {
                 }`}
               >
                 <Bookmark className="w-3.5 h-3.5 fill-current" />
-                <span>For Later ({tabCounts.laterCount})</span>
+                <span>For Later ({tabRenderedCounts.laterCount})</span>
               </button>
             </div>
 
             {/* VIEW MODE & UPCOMING TOGGLE CONTROLS */}
             <div className="flex items-center gap-2 self-end sm:self-auto">
-              {/* UPCOMING ONLY TOGGLE */}
               <button
                 type="button"
                 onClick={() => setUpcomingOnly((prev) => !prev)}
@@ -336,7 +334,6 @@ export default function HistoryPage({ onBack }) {
                 <span>Upcoming Only</span>
               </button>
 
-              {/* WEEKLY / MONTHLY VIEW SWITCH */}
               <div className="flex items-center bg-white p-1 rounded-xl border border-parchment-200 shadow-xs">
                 <button
                   onClick={() => setDisplayMode('weekly')}
@@ -365,18 +362,14 @@ export default function HistoryPage({ onBack }) {
           </div>
 
           {/* BATCH ACTION CONTROLS */}
-          {filteredItems.length > 0 && (
+          {activeDaysList.length > 0 && (
             <div className="flex items-center justify-between bg-white px-4 py-2 rounded-2xl border border-parchment-200 shadow-sm text-xs font-medium text-parchment-800">
               <button 
                 onClick={selectAll}
                 className="flex items-center gap-2 hover:text-terracotta transition-colors"
               >
-                {selectedIds.length === filteredItems.length && filteredItems.length > 0 ? (
-                  <CheckSquare className="w-4 h-4 text-terracotta" />
-                ) : (
-                  <Square className="w-4 h-4 text-parchment-400" />
-                )}
-                <span>Select All ({filteredItems.length})</span>
+                <CheckSquare className="w-4 h-4 text-terracotta" />
+                <span>Toggle Select All</span>
               </button>
 
               {selectedIds.length > 0 && (
@@ -396,7 +389,7 @@ export default function HistoryPage({ onBack }) {
             <div className="py-20 text-center text-xs text-parchment-600 animate-pulse">
               Loading calendar schedules...
             </div>
-          ) : filteredItems.length === 0 || activeDaysList.length === 0 ? (
+          ) : activeDaysList.length === 0 ? (
             <div className="py-16 bg-white rounded-3xl border border-dashed border-parchment-200 text-center p-6 space-y-2">
               <Sparkles className="w-8 h-8 text-terracotta/40 mx-auto" />
               <h3 className="font-serif font-bold text-parchment-900">
@@ -407,8 +400,6 @@ export default function HistoryPage({ onBack }) {
               </p>
             </div>
           ) : displayMode === 'weekly' ? (
-            
-            /* WEEKLY VIEW */
             <div className="space-y-4">
               {activeDaysList.map((day) => (
                 <div
@@ -482,11 +473,7 @@ export default function HistoryPage({ onBack }) {
               ))}
             </div>
           ) : (
-
-            /* MONTHLY GRID VIEW */
             <div className="bg-white rounded-3xl border border-parchment-200 shadow-sm p-4 space-y-4">
-              
-              {/* MONTH NAVIGATOR HEADER */}
               <div className="flex items-center justify-between border-b border-parchment-100 pb-3">
                 <h2 className="font-serif font-bold text-base text-parchment-900">
                   {currentMonthDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
@@ -513,14 +500,12 @@ export default function HistoryPage({ onBack }) {
                 </div>
               </div>
 
-              {/* DAY HEADERS */}
               <div className="grid grid-cols-7 gap-1 text-center font-bold text-[11px] text-parchment-500 uppercase tracking-wider">
                 {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d) => (
                   <span key={d}>{d}</span>
                 ))}
               </div>
 
-              {/* CALENDAR MONTH GRID */}
               <div className="grid grid-cols-7 gap-1 auto-rows-fr">
                 {monthlyGrid.map((cell) => (
                   <div
@@ -559,7 +544,6 @@ export default function HistoryPage({ onBack }) {
         </div>
       </main>
 
-      {/* EVENT DETAIL POP-UP MODAL OVERLAY */}
       {activeModalEvent && (() => {
         const ev = activeModalEvent.event || {};
         const venue = ev.venue_name || ev.venue || 'Local Venue';
@@ -570,8 +554,6 @@ export default function HistoryPage({ onBack }) {
         return (
           <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-200">
             <div className="bg-white rounded-3xl max-w-lg w-full max-h-[90dvh] overflow-y-auto border border-parchment-200 shadow-2xl flex flex-col relative animate-in zoom-in-95 duration-200">
-              
-              {/* CLOSE BUTTON */}
               <button
                 onClick={() => setActiveModalEvent(null)}
                 className="absolute top-3 right-3 z-20 bg-white/80 backdrop-blur-md p-2 rounded-full text-parchment-700 hover:text-terracotta hover:bg-white shadow-md transition-colors"
@@ -580,7 +562,6 @@ export default function HistoryPage({ onBack }) {
                 <X className="w-5 h-5" />
               </button>
 
-              {/* MODAL IMAGE */}
               <div className="relative h-56 w-full bg-parchment-100 shrink-0">
                 <img
                   src={ev.image_url || FALLBACK_IMAGE}
@@ -594,7 +575,6 @@ export default function HistoryPage({ onBack }) {
                 </span>
               </div>
 
-              {/* MODAL CONTENT BODY */}
               <div className="p-6 space-y-4 flex-1">
                 <div>
                   <h3 className="font-serif font-bold text-xl text-parchment-900 leading-tight">
@@ -611,12 +591,10 @@ export default function HistoryPage({ onBack }) {
                   </a>
                 </div>
 
-                {/* FULL DESCRIPTION */}
                 <p className="text-xs sm:text-sm text-parchment-800 leading-relaxed bg-parchment-50 p-3.5 rounded-2xl border border-parchment-100">
                   {ev.description || 'No extended description available for this event.'}
                 </p>
 
-                {/* METADATA TAGS */}
                 <div className="flex flex-wrap gap-2 text-xs">
                   {ev.is_free && (
                     <span className="bg-emerald-100 text-emerald-800 font-bold px-2.5 py-1 rounded-full flex items-center gap-1">
@@ -635,7 +613,6 @@ export default function HistoryPage({ onBack }) {
                   )}
                 </div>
 
-                {/* DIRECT ACTION LINK */}
                 <div className="pt-2 flex justify-end">
                   <a
                     href={activeModalEvent.url || ev.external_url || '#'}
