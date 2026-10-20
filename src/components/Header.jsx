@@ -54,29 +54,30 @@ export default function Header({
 
   return (
     <header className="sticky top-0 z-40 bg-parchment-50/95 backdrop-blur-md border-b border-parchment-200 shadow-sm">
-      <div className="max-w-md mx-auto px-4 py-3 flex items-center justify-between">
+      <div className="max-w-md mx-auto px-4 py-2.5 flex flex-col gap-2.5">
         
-        {/* Logo / Brand with Graffiti City Qualifier */}
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-xl bg-terracotta text-white flex items-center justify-center shadow-sm">
+        {/* TIER 1: TOPMOST BRANDING HEADER */}
+        <div className="flex items-center justify-center gap-2 pt-0.5">
+          <div className="w-7 h-7 rounded-xl bg-terracotta text-white flex items-center justify-center shadow-xs shrink-0">
             <ShipWheel className="w-4 h-4" />
           </div>
           <div className="flex items-center gap-2">
-            <span className="font-serif font-bold text-lg tracking-tight text-parchment-900">
+            <span className="font-serif font-bold text-xl tracking-tight text-parchment-900">
               Vivida
             </span>
 
+            {/* Permanent Marker Graffiti Tag */}
             <span 
               style={{ fontFamily: "'Permanent Marker', cursive" }}
-              className="inline-block transform -rotate-3 text-terracotta text-sm tracking-wide leading-none select-none drop-shadow-2xs"
+              className="inline-block transform -rotate-3 text-terracotta text-base tracking-wide leading-none select-none drop-shadow-2xs"
             >
               {city}
             </span>
           </div>
         </div>
 
-        {/* Action Controls */}
-        <div className="flex items-center gap-1.5">
+        {/* TIER 2: ACTION CONTROLS ROW */}
+        <div className="flex items-center justify-center gap-2 pt-0.5">
           
           {/* Mood Slider Toggle */}
           <button
@@ -86,9 +87,9 @@ export default function Header({
               e.stopPropagation();
               setIsSlidersOpen((prev) => !prev);
             }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all ${
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold border transition-all shadow-2xs ${
               isSlidersOpen
-                ? 'bg-terracotta text-white border-terracotta shadow-sm'
+                ? 'bg-terracotta text-white border-terracotta shadow-xs'
                 : 'bg-white text-parchment-800 border-parchment-200 hover:border-terracotta/50'
             }`}
             title="Adjust Mood Vibe"
@@ -97,19 +98,19 @@ export default function Header({
             <span>Vibe</span>
           </button>
 
-          {/* Top-Bar Reset Button with Labeled Tooltip */}
+          {/* Reset Button */}
           <button
             type="button"
             onClick={(e) => {
               e.preventDefault();
               if (onResetLocalHistory) onResetLocalHistory();
             }}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-full bg-white border border-parchment-200 text-parchment-700 hover:text-rose-600 hover:border-rose-200 hover:bg-rose-50 transition-all text-xs font-semibold shadow-2xs"
+            className="flex items-center gap-1 px-3 py-1.5 rounded-full bg-white border border-parchment-200 text-parchment-800 hover:text-rose-600 hover:border-rose-200 hover:bg-rose-50 transition-all text-xs font-bold shadow-2xs"
             title="Reset local mood vectors and deck history"
             aria-label="Reset Local Vibe"
           >
             <RotateCcw className="w-3.5 h-3.5 text-rose-600" />
-            <span className="text-[11px] font-bold text-parchment-800">Reset</span>
+            <span>Reset</span>
           </button>
 
           {/* Unified History Button */}
@@ -119,21 +120,22 @@ export default function Header({
               e.preventDefault();
               onOpenHistory();
             }}
-            className="relative p-2 rounded-full bg-white border border-parchment-200 text-parchment-800 hover:bg-parchment-100 transition-colors flex items-center gap-1"
+            className="relative px-3.5 py-1.5 rounded-full bg-white border border-parchment-200 text-parchment-800 hover:bg-parchment-100 transition-colors flex items-center gap-1.5 text-xs font-bold shadow-2xs"
             title="Selection History"
           >
-            <History className="w-4 h-4" />
+            <History className="w-3.5 h-3.5 text-terracotta" />
+            <span>History</span>
 
             {totalCount > 0 && (
               <div className="flex items-center gap-0.5 ml-0.5">
                 {vibeCount > 0 && (
-                  <span className="flex items-center gap-0.5 bg-emerald-600 text-white text-[10px] font-bold px-1.5 py-0.2 rounded-full">
+                  <span className="flex items-center gap-0.5 bg-emerald-600 text-white text-[9px] font-bold px-1.5 py-0.2 rounded-full">
                     <Flame className="w-2.5 h-2.5 fill-current" />
                     {vibeCount}
                   </span>
                 )}
                 {savedCount > 0 && (
-                  <span className="flex items-center gap-0.5 bg-amber-600 text-white text-[10px] font-bold px-1.5 py-0.2 rounded-full">
+                  <span className="flex items-center gap-0.5 bg-amber-600 text-white text-[9px] font-bold px-1.5 py-0.2 rounded-full">
                     <Bookmark className="w-2.5 h-2.5 fill-current" />
                     {savedCount}
                   </span>
