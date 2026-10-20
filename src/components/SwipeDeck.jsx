@@ -267,7 +267,8 @@ export default function SwipeDeck({ events, mood, onSwipe, onReset }) {
         >
           <div className="flex-1 flex flex-col justify-between overflow-hidden pointer-events-none">
             <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-              {/* COMPACT IMAGE CONTAINER */}
+              
+              {/* IMAGE CONTAINER WITH BOTTOM-ALIGNED OVERLAYS */}
               <div className="relative h-32 sm:h-36 w-full bg-parchment-100 overflow-hidden shrink-0">
                 <img
                   src={activeEvent.image_url || FALLBACK_IMAGE}
@@ -279,10 +280,13 @@ export default function SwipeDeck({ events, mood, onSwipe, onReset }) {
                   }}
                   className="w-full h-full object-cover pointer-events-none"
                 />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20 pointer-events-none" />
+                
+                {/* BOTTOM GRADIENT FOR CONTRAST & LEGIBILITY */}
+                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent pointer-events-none" />
 
-                <div className="absolute top-3 left-3 right-3 flex justify-between items-center z-10 pointer-events-none">
-                  <span className="text-[10px] font-semibold uppercase tracking-wider bg-black/50 backdrop-blur-md text-white px-2 py-0.5 rounded-full border border-white/20">
+                {/* BOTTOM BADGES (CATEGORY + MATCH SCORE) */}
+                <div className="absolute bottom-2.5 left-2.5 right-2.5 flex justify-between items-center z-10 pointer-events-none">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider bg-black/60 backdrop-blur-md text-white px-2 py-0.5 rounded-full border border-white/20">
                     {activeEvent.category || 'Local Experience'}
                   </span>
                   <div className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold shadow-md transition-colors ${getBadgeStyle(currentMatchScore)}`}>

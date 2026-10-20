@@ -315,6 +315,7 @@ export default function ContinuousFeed({ events, mood, onSwipe, onReset }) {
                           onClick={() => setActiveModalEvent({ event, scheduleUrl, matchScore })}
                         >
                           <div className="flex gap-2.5 items-start">
+                            {/* THUMBNAIL WITH BOTTOM MATCH BADGE */}
                             <div className="relative w-20 h-20 shrink-0 rounded-xl overflow-hidden bg-parchment-100 border border-parchment-100">
                               <img
                                 src={event.image_url || FALLBACK_IMAGE}
@@ -326,7 +327,8 @@ export default function ContinuousFeed({ events, mood, onSwipe, onReset }) {
                                 }}
                                 className="w-full h-full object-cover"
                               />
-                              <div className={`absolute bottom-1 left-1 px-1.5 py-0.5 rounded-md text-[9px] font-bold shadow-2xs ${getBadgeStyle(matchScore)}`}>
+                              <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent pointer-events-none" />
+                              <div className={`absolute bottom-1 right-1 px-1.5 py-0.5 rounded-md text-[9px] font-bold shadow-2xs ${getBadgeStyle(matchScore)}`}>
                                 {matchScore}%
                               </div>
                             </div>
@@ -400,130 +402,79 @@ export default function ContinuousFeed({ events, mood, onSwipe, onReset }) {
         )}
       </div>
 
-      {/* POP-OUT DETAIL MODAL OVERLAY */}
-      {activeModalEvent && (() => {
-        const ev = activeModalEvent.event || {};
-        const venue = ev.venue_name || ev.venue || 'Local Venue';
-        const mapUrl = ev.latitude && ev.longitude
-          ? `https://www.google.com/maps/search/?api=1&query=${ev.latitude},${ev.longitude}`
-          : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(venue + ' ' + (ev.address || 'Tacoma, WA'))}`;
+      {/* DETAIL INSPECTION MODAL FOR CONTINUOUS FEED */}
+      {activeModalEvent && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-5 border border-parchment-200 shadow-2xl relative space-y-3 max-h-[85vh] overflow-y-auto no-scrollbar animate-in zoom-in-95 duration-200">
+            <button
+              onClick={() => setActiveModalEvent(null)}
+              className="absolute top-3 right-3 p-1.5 rounded-full text-parchment-400 hover:text-parchment-700 hover:bg-parchment-100 transition-colors z-10 bg-white/80 backdrop-blur-xs"
+              aria-label="Close modal"
+            >
+              <X className="w-4 h-4" />
+            </button>
 
-        return (
-          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-200">
-            <div className="bg-white rounded-3xl max-w-lg w-full max-h-[90dvh] overflow-y-auto border border-parchment-200 shadow-2xl flex flex-col relative animate-in zoom-in-95 duration-200">
-              <button
-                onClick={() => setActiveModalEvent(null)}
-                className="absolute top-3 right-3 z-20 bg-white/80 backdrop-blur-md p-2 rounded-full text-parchment-700 hover:text-terracotta hover:bg-white shadow-md transition-colors"
-                aria-label="Close modal"
-              >
-                <X className="w-5 h-5" />
-              </button>
-
-              <div className="relative h-56 w-full bg-parchment-100 shrink-0">
-                <img
-                  src={ev.image_url || FALLBACK_IMAGE}
-                  alt={ev.title || 'Event'}
-                  className="w-full h-full object-cover"
-                  onError={(e) => { e.target.onerror = null; e.target.src = FALLBACK_IMAGE; }}
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
-                <span className="absolute bottom-3 left-4 text-xs font-bold uppercase tracking-wider bg-black/50 text-white px-2.5 py-1 rounded-full border border-white/20 backdrop-blur-md">
-                  {ev.category || 'Local Experience'}
+            <div className="relative h-36 w-full rounded-2xl overflow-hidden bg-parchment-100 shrink-0">
+              <img
+                src={activeModalEvent.event.image_url || FALLBACK_IMAGE}
+                alt={activeModalEvent.event.title}
+                className="w-full h-full object-cover"
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
+              <div className="absolute bottom-2.5 left-2.5 right-2.5 flex justify-between items-center z-10">
+                <span className="text-[10px] font-semibold uppercase tracking-wider bg-black/60 backdrop-blur-md text-white px-2 py-0.5 rounded-full border border-white/20">
+                  {activeModalEvent.event.category || 'Local Experience'}
                 </span>
-                <div className={`absolute bottom-3 right-4 px-2.5 py-1 rounded-full text-xs font-bold shadow-md ${getBadgeStyle(activeModalEvent.matchScore)}`}>
+                <div className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold shadow-md ${getBadgeStyle(activeModalEvent.matchScore)}`}>
+                  <Flame className="w-3 h-3 fill-white" />
                   {activeModalEvent.matchScore}% Match
                 </div>
               </div>
+            </div>
 
-              <div className="p-6 space-y-4 flex-1">
-                <div>
-                  <h3 className="font-serif font-bold text-xl text-parchment-900 leading-tight">
-                    {ev.title}
-                  </h3>
-                  <a
-                    href={mapUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 text-xs text-terracotta font-medium hover:underline mt-1"
-                  >
-                    <MapPin className="w-3.5 h-3.5 shrink-0" />
-                    <span>{venue} {ev.address ? `• ${ev.address}` : ''}</span>
-                  </a>
-                </div>
+            <h3 className="font-serif font-bold text-base text-parchment-900 leading-tight">
+              {activeModalEvent.event.title}
+            </h3>
 
-                <p className="text-xs sm:text-sm text-parchment-800 leading-relaxed bg-parchment-50 p-3.5 rounded-2xl border border-parchment-100">
-                  {ev.description || 'No extended description available for this event.'}
+            <p className="text-xs text-parchment-700 leading-relaxed">
+              {activeModalEvent.event.description}
+            </p>
+
+            <div className="pt-2 border-t border-parchment-100 space-y-1.5 text-xs text-parchment-800">
+              <p className="flex items-center gap-1.5 text-terracotta font-medium">
+                <MapPin className="w-3.5 h-3.5 shrink-0" />
+                <span>{activeModalEvent.event.venue_name || activeModalEvent.event.venue || 'Tacoma, WA'}</span>
+              </p>
+              {activeModalEvent.event.price_info && (
+                <p className="flex items-center gap-1.5 text-parchment-600">
+                  <Tag className="w-3.5 h-3.5 shrink-0 text-terracotta" />
+                  <span>{activeModalEvent.event.price_info}</span>
                 </p>
+              )}
+            </div>
 
-                <div className="flex flex-wrap gap-2 text-xs">
-                  {ev.price_info && (
-                    <span className="bg-emerald-100 text-emerald-800 font-bold px-2.5 py-1 rounded-full flex items-center gap-1">
-                      <Tag className="w-3 h-3" /> {ev.price_info}
-                    </span>
-                  )}
-                  {ev.age_restriction && (
-                    <span className="bg-parchment-100 text-parchment-800 font-semibold px-2.5 py-1 rounded-full">
-                      {ev.age_restriction}
-                    </span>
-                  )}
-                  {ev.indoor_outdoor && (
-                    <span className="bg-parchment-100 text-parchment-800 font-semibold px-2.5 py-1 rounded-full">
-                      {ev.indoor_outdoor}
-                    </span>
-                  )}
-                </div>
-
-                <div className="pt-2 flex items-center justify-between gap-3 border-t border-parchment-100">
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => {
-                        onSwipe?.('not_my_scene', ev);
-                        setActiveModalEvent(null);
-                      }}
-                      className="p-2.5 rounded-xl border border-rose-200 text-rose-700 hover:bg-rose-50 transition-colors"
-                      title="Pass"
-                    >
-                      <ThumbsDown className="w-4 h-4" />
-                    </button>
-
-                    <button
-                      onClick={() => {
-                        onSwipe?.('maybe_later', ev);
-                        setActiveModalEvent(null);
-                      }}
-                      className="p-2.5 rounded-xl border border-amber-200 text-amber-700 hover:bg-amber-50 transition-colors"
-                      title="Maybe"
-                    >
-                      <Heart className="w-4 h-4" />
-                    </button>
-
-                    <button
-                      onClick={() => {
-                        onSwipe?.('totally_vibe', ev);
-                        setActiveModalEvent(null);
-                      }}
-                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-terracotta text-white font-bold text-xs hover:bg-terracotta-hover transition-colors shadow-xs"
-                    >
-                      <Flame className="w-4 h-4 fill-white" />
-                      <span>Vibe</span>
-                    </button>
-                  </div>
-
-                  <a
-                    href={sanitizeUrl(activeModalEvent.scheduleUrl || ev.external_url)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 bg-parchment-900 text-white font-bold px-4 py-2.5 rounded-xl text-xs hover:bg-black transition-colors"
-                  >
-                    <span>Get Details</span>
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
-                </div>
-              </div>
+            <div className="pt-2 flex items-center justify-between gap-2">
+              {activeModalEvent.scheduleUrl && activeModalEvent.scheduleUrl !== '#' && (
+                <a
+                  href={sanitizeUrl(activeModalEvent.scheduleUrl)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 bg-terracotta text-white font-bold px-3.5 py-1.5 rounded-xl text-xs hover:bg-terracotta-hover transition-colors shadow-2xs"
+                >
+                  <span>Register</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              )}
+              <button
+                onClick={() => setActiveModalEvent(null)}
+                className="ml-auto text-xs font-semibold text-parchment-600 hover:text-parchment-900 px-3 py-1.5 rounded-xl hover:bg-parchment-100 transition-colors"
+              >
+                Close
+              </button>
             </div>
           </div>
-        );
-      })()}
+        </div>
+      )}
     </div>
   );
 }
