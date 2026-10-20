@@ -1,13 +1,10 @@
 // src/components/SwipeDeck.jsx
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Calendar, MapPin, Sparkles, Flame, ExternalLink, Tag, Bookmark, RotateCcw } from 'lucide-react';
 import { motion, useMotionValue, useTransform, AnimatePresence, animate } from 'framer-motion';
 
 const FALLBACK_IMAGE = "https://images.unsplash.com/photo-1492684223066-81342ee5ff30?auto=format&fit=crop&w=800&q=80";
 
-/**
- * Sanitizes URLs to prevent XSS (e.g., javascript: URIs)
- */
 function sanitizeUrl(url) {
   if (!url || typeof url !== 'string') return '#';
   try {
@@ -48,7 +45,6 @@ export default function SwipeDeck({ events, mood, onSwipe, onReset }) {
 
   const activeEvent = events[0];
 
-  // Derive match score percentage from passed matchScore (0.0 to 1.0) or calculate fallback
   const currentMatchScore = (() => {
     if (typeof activeEvent.matchScore === 'number') {
       return Math.round(activeEvent.matchScore * 100);
@@ -67,54 +63,53 @@ export default function SwipeDeck({ events, mood, onSwipe, onReset }) {
   })();
 
   const getBadgeStyle = (score) => {
-    if (score >= 85) {
-      return 'bg-emerald-600 text-white';
-    } else if (score >= 65) {
-      return 'bg-amber-600 text-white';
-    }
+    if (score >= 85) return 'bg-emerald-600 text-white';
+    if (score >= 65) return 'bg-amber-600 text-white';
     return 'bg-terracotta text-white';
   };
 
   const x = useMotionValue(0);
   const y = useMotionValue(0);
 
+  // Automatically reset drag offsets whenever the active card ID changes
+  useEffect(() => {
+    x.set(0);
+    y.set(0);
+  }, [activeEvent?.id, x, y]);
+
   const rotate = useTransform(x, [-200, 200], [-12, 12]);
 
-  // 1:1 Sync with Left Drag (Not My Scene)
+  // Badge animation transformations
   const rejectScale = useTransform(x, [0, -150], [1, 2]);
   const swipeRejectOpacity = useTransform(x, [0, -150], [0, 1]);
   const rejectBlur = useTransform(x, [0, -150], ["blur(10px)", "blur(0px)"]);
 
-  // 1:1 Sync with Right Drag (Totally My Vibe)
   const vibeScale = useTransform(x, [0, 150], [1, 2]);
   const swipeVibeOpacity = useTransform(x, [0, 150], [0, 1]);
   const vibeBlur = useTransform(x, [0, 150], ["blur(10px)", "blur(0px)"]);
 
-  // 1:1 Sync with Upward Drag (Maybe Later)
   const maybeScale = useTransform(y, [0, -150], [1, 2]);
   const swipeMaybeOpacity = useTransform(y, [0, -150], [0, 1]);
   const maybeBlur = useTransform(y, [0, -150], ["blur(10px)", "blur(0px)"]);
 
   const triggerSwipe = (action) => {
-    if (action === 'not_my_scene') {
-      animate(x, -350, { duration: 0.2 }).then(() => {
-        onSwipe?.(action, activeEvent);
-        x.set(0);
-        y.set(0);
-      });
-    } else if (action === 'totally_vibe') {
-      animate(x, 350, { duration: 0.2 }).then(() => {
-        onSwipe?.(action, activeEvent);
-        x.set(0);
-        y.set(0);
-      });
-    } else if (action === 'maybe_later') {
-      animate(y, -350, { duration: 0.2 }).then(() => {
-        onSwipe?.(action, activeEvent);
-        x.set(0);
-        y.set(0);
-      });
-    }
+    let targetX = 0;
+    let targetY = 0;
+
+    if (action === 'not_my_scene') targetX = -400;
+    if (action === 'totally_vibe') targetX = 400;
+    if (action === 'maybe_later') targetY = -400;
+
+    const animX = targetX !== 0 ? animate(x, targetX, { duration: 0.18 }) : Promise.resolve();
+    const animY = targetY !== 0 ? animate(y, targetY, { duration: 0.18 }) : Promise.resolve();
+
+    Promise.all([animX, animY]).then(() => {
+      // 1. Immediately reset position variables
+      x.set(0);
+      y.set(0);
+      // 2. Trigger parent state update (moves to next card)
+      onSwipe?.(action, activeEvent);
+    });
   };
 
   const handleDragEnd = (e, info) => {
@@ -140,9 +135,7 @@ export default function SwipeDeck({ events, mood, onSwipe, onReset }) {
     if (typeof scheduleData === 'string') {
       try {
         scheduleData = JSON.parse(scheduleData);
-        if (typeof scheduleData === 'string') {
-          scheduleData = JSON.parse(scheduleData);
-        }
+        if (typeof scheduleData === 'string') scheduleData = JSON.parse(scheduleData);
       } catch (err) {
         return [];
       }
@@ -259,13 +252,13 @@ export default function SwipeDeck({ events, mood, onSwipe, onReset }) {
       </motion.div>
 
       {/* INTERACTIVE SWIPE CARD */}
-      <AnimatePresence mode="wait">
+      <AnimatePresence mode="popLayout">
         <motion.div
           key={activeEvent.id || activeEvent.title || 'active-card'}
           initial={{ scale: 0.95, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
-          exit={{ scale: 0.95, opacity: 0 }}
-          transition={{ type: "spring", stiffness: 300, damping: 25 }}
+          exit={{ scale: 0.9, opacity: 0 }}
+          transition={{ type: "spring", stiffness: 350, damping: 25 }}
           style={{ x, y, rotate }}
           drag
           dragDirectionLock

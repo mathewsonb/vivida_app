@@ -5,10 +5,10 @@ import {
   SlidersHorizontal, 
   History, 
   ChevronUp, 
-  Sparkles, 
   Flame, 
   Bookmark, 
-  UserCheck 
+  ShipWheel,
+  RotateCcw
 } from 'lucide-react';
 import MoodSliders from './MoodSliders';
 
@@ -16,17 +16,28 @@ export default function Header({
   mood, 
   onChangeMood, 
   onOpenHistory, 
+  onResetLocalHistory,
   vibeCount = 0, 
   savedCount = 0, 
-  hasUserHash = false 
+  city = "Tacoma"
 }) {
   const [isSlidersOpen, setIsSlidersOpen] = useState(false);
   const collapseTimeoutRef = useRef(null);
 
+  useEffect(() => {
+    const fontId = 'permanent-marker-font';
+    if (!document.getElementById(fontId)) {
+      const link = document.createElement('link');
+      link.id = fontId;
+      link.rel = 'stylesheet';
+      link.href = 'https://fonts.googleapis.com/css2?family=Permanent+Marker&display=swap';
+      document.head.appendChild(link);
+    }
+  }, []);
+
   const handleMoodChange = (newMood) => {
     onChangeMood(newMood);
 
-    // Auto-collapse drawer after 2.5 seconds of inactivity
     if (collapseTimeoutRef.current) clearTimeout(collapseTimeoutRef.current);
     collapseTimeoutRef.current = setTimeout(() => {
       setIsSlidersOpen(false);
@@ -45,25 +56,27 @@ export default function Header({
     <header className="sticky top-0 z-40 bg-parchment-50/95 backdrop-blur-md border-b border-parchment-200 shadow-sm">
       <div className="max-w-md mx-auto px-4 py-3 flex items-center justify-between">
         
-        {/* Logo / Brand */}
+        {/* Logo / Brand with Graffiti City Qualifier */}
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-xl bg-terracotta text-white flex items-center justify-center shadow-sm">
-            <Sparkles className="w-4 h-4 fill-white" />
+            <ShipWheel className="w-4 h-4" />
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
             <span className="font-serif font-bold text-lg tracking-tight text-parchment-900">
               Vivida
             </span>
-            {hasUserHash && (
-              <span title="Syncing across sessions" className="text-emerald-600">
-                <UserCheck className="w-3.5 h-3.5" />
-              </span>
-            )}
+
+            <span 
+              style={{ fontFamily: "'Permanent Marker', cursive" }}
+              className="inline-block transform -rotate-3 text-terracotta text-sm tracking-wide leading-none select-none drop-shadow-2xs"
+            >
+              {city}
+            </span>
           </div>
         </div>
 
         {/* Action Controls */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           
           {/* Mood Slider Toggle */}
           <button
@@ -84,7 +97,22 @@ export default function Header({
             <span>Vibe</span>
           </button>
 
-          {/* Unified History Button with Separate Counter Badges */}
+          {/* Top-Bar Reset Button with Labeled Tooltip */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              if (onResetLocalHistory) onResetLocalHistory();
+            }}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-full bg-white border border-parchment-200 text-parchment-700 hover:text-rose-600 hover:border-rose-200 hover:bg-rose-50 transition-all text-xs font-semibold shadow-2xs"
+            title="Reset local mood vectors and deck history"
+            aria-label="Reset Local Vibe"
+          >
+            <RotateCcw className="w-3.5 h-3.5 text-rose-600" />
+            <span className="text-[11px] font-bold text-parchment-800">Reset</span>
+          </button>
+
+          {/* Unified History Button */}
           <button
             type="button"
             onClick={(e) => {
@@ -96,7 +124,6 @@ export default function Header({
           >
             <History className="w-4 h-4" />
 
-            {/* Separate Vibe & Saved Counter Badges */}
             {totalCount > 0 && (
               <div className="flex items-center gap-0.5 ml-0.5">
                 {vibeCount > 0 && (
