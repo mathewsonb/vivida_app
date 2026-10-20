@@ -5,7 +5,6 @@ import {
   SlidersHorizontal, 
   History, 
   ChevronUp, 
-  Flame, 
   ShipWheel,
   RotateCcw,
   ShieldCheck
@@ -17,8 +16,6 @@ export default function Header({
   onChangeMood, 
   onOpenHistory, 
   onResetLocalHistory,
-  vibeCount = 0, 
-  savedCount = 0, 
   hasUserHash = false,
   city = "Tacoma"
 }) {
@@ -50,9 +47,6 @@ export default function Header({
       if (collapseTimeoutRef.current) clearTimeout(collapseTimeoutRef.current);
     };
   }, []);
-
-  // Use vibeCount directly to avoid double-counting if savedCount is also passed
-  const totalCount = (Number(vibeCount) || 0) + (Number(savedCount) || 0);
 
   return (
     <header className="sticky top-0 z-40 bg-parchment-50/95 backdrop-blur-md border-b border-parchment-200 shadow-sm">
@@ -140,15 +134,6 @@ export default function Header({
           >
             <History className="w-3.5 h-3.5 text-terracotta" />
             <span>History</span>
-
-            {totalCount > 0 && (
-              <div className="flex items-center gap-0.5 ml-0.5">
-                <span className="flex items-center gap-0.5 bg-emerald-600 text-white text-[9px] font-bold px-1.5 py-0.2 rounded-full">
-                  <Flame className="w-2.5 h-2.5 fill-current" />
-                  {totalCount}
-                </span>
-              </div>
-            )}
           </button>
         </div>
       </div>
