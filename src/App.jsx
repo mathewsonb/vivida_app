@@ -7,7 +7,7 @@ import ContinuousFeed from './components/ContinuousFeed';
 import EmailPromptModal from './components/EmailPromptModal';
 import { ThumbsDown, Heart, Flame, Sparkles, RotateCcw, AlertTriangle, X, Layers, ListFilter, Undo2 } from 'lucide-react';
 import HistoryPage from './components/HistoryPage';
-import { getCurrentMood, recordSwipe, setCurrentMood, applyVectorDrift } from './services/historyService';
+import { getCurrentMood, recordSwipe, setCurrentMood, applyVectorDrift, getFutureUserInteractions } from './services/historyService';
 import { getOrCreateClientId } from './utils/session';
 
 const calculateEuclideanSimilarity = (userMood, event) => {
@@ -47,6 +47,7 @@ const getEarliestEventDate = (event, todayStr, extractDatesFn) => {
 
 export default function App() {
   const [rawEvents, setRawEvents] = useState([]);
+  const [allFetchedEvents, setAllFetchedEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sessionKey, setSessionKey] = useState('');
   const [userHash, setUserHash] = useState(null);
@@ -116,6 +117,8 @@ export default function App() {
       if (!supabase) return;
 
       const localSwipedIds = new Set();
+      
+      // 1. Read local history IDs
       try {
         const localHistory = JSON.parse(localStorage.getItem('vibe_history') || '[]');
         if (Array.isArray(localHistory)) {
@@ -127,15 +130,12 @@ export default function App() {
         console.warn('Failed to read vibe_history from localStorage:', err);
       }
 
+      // 2. Recall past choices on future events from Supabase database
       const activeUserIdentifier = userHash || sessionKey;
       if (activeUserIdentifier) {
-        const { data: interactions } = await supabase
-          .from('user_interactions')
-          .select('event_id')
-          .eq('user_id', activeUserIdentifier);
-
-        if (interactions && interactions.length > 0) {
-          interactions.forEach((item) => {
+        const futureInteractions = await getFutureUserInteractions(activeUserIdentifier);
+        if (futureInteractions && futureInteractions.length > 0) {
+          futureInteractions.forEach((item) => {
             if (item?.event_id) localSwipedIds.add(String(item.event_id));
           });
         }
@@ -173,6 +173,7 @@ export default function App() {
       });
 
       setRawEvents(validEvents);
+      setAllFetchedEvents(data || []);
     } catch (err) {
       console.error('Error fetching discovery events:', err.message || err);
     } finally {
@@ -195,6 +196,21 @@ export default function App() {
   useEffect(() => {
     fetchEvents();
   }, [fetchEvents]);
+
+  // Recycles unswiped/passed events into feed when exhausted
+  const handleExhaustedDeckRecycle = useCallback(() => {
+    if (allFetchedEvents.length > 0) {
+      setRawEvents([...allFetchedEvents]);
+    } else {
+      fetchEvents();
+    }
+  }, [allFetchedEvents, fetchEvents]);
+
+  useEffect(() => {
+    if (!loading && rawEvents.length === 0 && interactionStack.length > 0) {
+      handleExhaustedDeckRecycle();
+    }
+  }, [rawEvents, loading, interactionStack, handleExhaustedDeckRecycle]);
 
   const executeDeckReset = useCallback(async () => {
     setIsResetModalOpen(false);
@@ -239,6 +255,7 @@ export default function App() {
     setInteractionStack([]);
     setIsLocalResetModalOpen(false);
 
+    // Re-fetch events while honoring remembered future event choices from remote database
     fetchEvents();
   }, [fetchEvents]);
 
@@ -362,7 +379,6 @@ export default function App() {
       />
 
       <main className="flex-1 w-full max-w-md mx-auto px-4 flex flex-col justify-between overflow-hidden py-2">
-        {/* REVISED SEGMENTED TOGGLE WITH SHORTENED LABELS */}
         <div className="flex items-center gap-2 mb-2 shrink-0">
           <div className="flex-1 flex items-center justify-center p-1 bg-parchment-200/60 rounded-2xl border border-parchment-200/80">
             <button
