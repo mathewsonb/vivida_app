@@ -59,8 +59,8 @@ export default function App() {
 
   const [interactionStack, setInteractionStack] = useState([]);
 
-  // Explicit count override when HistoryPage renders expanded schedule cards
-  const [historyRenderedCount, setHistoryRenderedCount] = useState(null);
+  // Explicit count structure when HistoryPage reports expanded card totals
+  const [historyRenderedCounts, setHistoryRenderedCounts] = useState(null);
 
   const [bookmarks, setBookmarks] = useState(() => {
     try {
@@ -256,7 +256,7 @@ export default function App() {
       localStorage.removeItem('vibe_history');
       localStorage.removeItem('vivida_bookmarks');
       setBookmarks([]);
-      setHistoryRenderedCount(0);
+      setHistoryRenderedCounts({ vibeCount: 0, savedCount: 0 });
       setInteractionStack([]);
 
       const activeUserIdentifier = userHash || localStorage.getItem('vivida_user_hash') || sessionKey;
@@ -289,7 +289,7 @@ export default function App() {
     setMood(defaultMood);
 
     setBookmarks([]);
-    setHistoryRenderedCount(0);
+    setHistoryRenderedCounts({ vibeCount: 0, savedCount: 0 });
     setInteractionStack([]);
     setIsLocalResetModalOpen(false);
 
@@ -403,14 +403,15 @@ export default function App() {
 
   const activeTopEvent = rankedEvents[0];
 
-  // Derive badge count directly from HistoryPage rendered count when available
-  const effectiveVibeCount = historyRenderedCount !== null ? historyRenderedCount : bookmarks.length;
+  // Derive counts directly from HistoryPage when reported, or fallback to local bookmarks state
+  const effectiveVibeCount = historyRenderedCounts ? historyRenderedCounts.vibeCount : bookmarks.length;
+  const effectiveSavedCount = historyRenderedCounts ? historyRenderedCounts.savedCount : 0;
 
   if (currentView === 'history') {
     return (
       <HistoryPage 
         onBack={() => setCurrentView('deck')} 
-        onCountUpdate={(renderedCount) => setHistoryRenderedCount(renderedCount)}
+        onCountUpdate={(counts) => setHistoryRenderedCounts(counts)}
       />
     );
   }
@@ -424,6 +425,7 @@ export default function App() {
         onOpenHistory={() => setCurrentView('history')}
         onResetLocalHistory={() => setIsLocalResetModalOpen(true)}
         vibeCount={effectiveVibeCount}
+        savedCount={effectiveSavedCount}
         hasUserHash={!!userHash}
       />
 
