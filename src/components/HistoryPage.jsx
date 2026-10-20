@@ -17,8 +17,7 @@ import {
   List,
   ChevronLeft,
   ChevronRight,
-  X,
-  Clock
+  X
 } from 'lucide-react';
 import { getUserHistory } from '../services/historyService';
 
@@ -43,7 +42,7 @@ export default function HistoryPage({ onBack }) {
     async function loadData() {
       setLoading(true);
       const items = await getUserHistory();
-      setHistoryItems(items);
+      setHistoryItems(items || []);
       setLoading(false);
     }
     loadData();
@@ -54,15 +53,36 @@ export default function HistoryPage({ onBack }) {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   }, []);
 
+  // Compute counts for tab badges directly from history items
+  const tabCounts = useMemo(() => {
+    let vibeCount = 0;
+    let laterCount = 0;
+
+    historyItems.forEach((item) => {
+      if (item.action === 'totally_vibe' || item.action === 'interested') {
+        vibeCount++;
+      } else if (item.action === 'maybe_later') {
+        laterCount++;
+      }
+    });
+
+    return { vibeCount, laterCount };
+  }, [historyItems]);
+
   const filteredItems = useMemo(() => {
-    return historyItems.filter(item => item.action === activeTab);
+    return historyItems.filter((item) => {
+      if (activeTab === 'totally_vibe') {
+        return item.action === 'totally_vibe' || item.action === 'interested';
+      }
+      return item.action === activeTab;
+    });
   }, [historyItems, activeTab]);
 
   // Selection handlers
   const toggleSelect = (id, e) => {
     if (e) e.stopPropagation();
-    setSelectedIds(prev => 
-      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    setSelectedIds((prev) => 
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
     );
   };
 
@@ -70,7 +90,7 @@ export default function HistoryPage({ onBack }) {
     if (selectedIds.length === filteredItems.length) {
       setSelectedIds([]);
     } else {
-      setSelectedIds(filteredItems.map(item => item.id));
+      setSelectedIds(filteredItems.map((item) => item.id || item.historyId));
     }
   };
 
@@ -90,7 +110,7 @@ export default function HistoryPage({ onBack }) {
       }
     }
     if (Array.isArray(raw)) {
-      return raw.map(i => ({
+      return raw.map((i) => ({
         dateStr: i.start_time || i.date || i.time || '',
         url: i.register || i.url || i.external_url || event.external_url || '#'
       }));
@@ -112,7 +132,6 @@ export default function HistoryPage({ onBack }) {
     const map = {};
 
     filteredItems.forEach((item) => {
-      // Fallback to event_snapshot if original event row was pruned
       const ev = item.events || item.event_snapshot || {};
       let schedules = getScheduleList(ev);
 
@@ -130,7 +149,7 @@ export default function HistoryPage({ onBack }) {
         if (isoMatches && isoMatches.length > 0) {
           dateKey = isoMatches[0];
         } else if (rawDate) {
-          // 2. Fallback to standard Date parsing
+          // 2. Fallback to standard Date parsing safely avoiding timezone drop-offs
           const parsed = new Date(rawDate);
           if (!isNaN(parsed.getTime())) {
             const y = parsed.getFullYear();
@@ -149,7 +168,7 @@ export default function HistoryPage({ onBack }) {
 
         if (!map[dateKey]) map[dateKey] = [];
         map[dateKey].push({
-          historyId: item.id,
+          historyId: item.id || item.event_id,
           event: ev,
           url: sched.url,
           dateKey,
@@ -175,10 +194,10 @@ export default function HistoryPage({ onBack }) {
         isToday: dateKey === todayStr,
         entries: eventsByDate[dateKey] || []
       };
-    }).filter(day => day.entries.length > 0);
+    }).filter((day) => day.entries.length > 0);
   }, [eventsByDate, todayStr]);
 
-  // Safe Monthly calendar grid generator
+  // Monthly calendar grid generator
   const monthlyGrid = useMemo(() => {
     try {
       const year = currentMonthDate.getFullYear();
@@ -216,7 +235,7 @@ export default function HistoryPage({ onBack }) {
   const handleShare = async (specificItem = null) => {
     const itemsToShare = specificItem 
       ? [specificItem] 
-      : historyItems.filter(item => selectedIds.includes(item.id));
+      : historyItems.filter((item) => selectedIds.includes(item.id || item.event_id));
 
     if (itemsToShare.length === 0) return;
 
@@ -285,7 +304,7 @@ export default function HistoryPage({ onBack }) {
                 }`}
               >
                 <Flame className="w-3.5 h-3.5" />
-                <span>For Now</span>
+                <span>For Now ({tabCounts.vibeCount})</span>
               </button>
 
               <button
@@ -297,7 +316,7 @@ export default function HistoryPage({ onBack }) {
                 }`}
               >
                 <Bookmark className="w-3.5 h-3.5 fill-current" />
-                <span>For Later</span>
+                <span>For Later ({tabCounts.laterCount})</span>
               </button>
             </div>
 
@@ -306,7 +325,7 @@ export default function HistoryPage({ onBack }) {
               {/* UPCOMING ONLY TOGGLE */}
               <button
                 type="button"
-                onClick={() => setUpcomingOnly(prev => !prev)}
+                onClick={() => setUpcomingOnly((prev) => !prev)}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
                   upcomingOnly
                     ? 'bg-terracotta text-white border-terracotta shadow-xs'
@@ -474,7 +493,7 @@ export default function HistoryPage({ onBack }) {
                 </h2>
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => setCurrentMonthDate(prev => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))}
+                    onClick={() => setCurrentMonthDate((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))}
                     className="p-1.5 text-parchment-700 hover:bg-parchment-100 rounded-xl transition-colors"
                   >
                     <ChevronLeft className="w-4 h-4" />
@@ -486,7 +505,7 @@ export default function HistoryPage({ onBack }) {
                     Today
                   </button>
                   <button
-                    onClick={() => setCurrentMonthDate(prev => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))}
+                    onClick={() => setCurrentMonthDate((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))}
                     className="p-1.5 text-parchment-700 hover:bg-parchment-100 rounded-xl transition-colors"
                   >
                     <ChevronRight className="w-4 h-4" />
@@ -496,7 +515,7 @@ export default function HistoryPage({ onBack }) {
 
               {/* DAY HEADERS */}
               <div className="grid grid-cols-7 gap-1 text-center font-bold text-[11px] text-parchment-500 uppercase tracking-wider">
-                {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
+                {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d) => (
                   <span key={d}>{d}</span>
                 ))}
               </div>
