@@ -199,15 +199,12 @@ export async function recordSwipe(action, event, userEmail = null, calculatedMoo
 }
 
 /**
- * Fetch active, unexpired user saved events ("View My Past Events")
+ * Fetch all user saved events ("View My Past Events") matching HistoryPage exactly
  */
 export async function getUserHistory(userEmail = null) {
   const clientId = getOrCreateClientId();
   const storedHash = localStorage.getItem('vivida_user_hash');
   const userHash = userEmail ? (userEmail.length === 64 ? userEmail : await hashEmail(userEmail)) : (storedHash || clientId);
-
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
   let remoteInteractions = [];
 
@@ -281,22 +278,8 @@ export async function getUserHistory(userEmail = null) {
     });
   });
 
-  // 3. Filter out expired dates with safe local midnight parsing
-  return Array.from(combinedMap.values()).filter((item) => {
-    const ev = item.events || item.event_snapshot;
-    const rawDate = ev?.end_date || ev?.date;
-    if (!rawDate) return true;
-
-    const dateMatch = String(rawDate).match(/\d{4}-\d{2}-\d{2}/);
-    if (dateMatch) {
-      const [y, m, d] = dateMatch[0].split('-').map(Number);
-      const eventDate = new Date(y, m - 1, d);
-      return eventDate >= today;
-    }
-
-    const eventDate = new Date(rawDate);
-    return isNaN(eventDate.getTime()) || eventDate >= today;
-  });
+  // Return all combined records so the badge count mirrors HistoryPage exactly
+  return Array.from(combinedMap.values());
 }
 
 /**

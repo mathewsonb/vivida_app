@@ -332,12 +332,25 @@ export default function App() {
       },
     ]);
 
+    // Optimistically remove from discovery deck
     setRawEvents((prev) => prev.filter((e) => String(e.id).trim().toLowerCase() !== String(event.id).trim().toLowerCase()));
+
+    // Optimistically add to bookmarks so the Header counter badge updates immediately
+    if (['interested', 'totally_vibe', 'maybe_later'].includes(type)) {
+      setBookmarks((prev) => {
+        const eventIdStr = String(event.id).trim().toLowerCase();
+        if (prev.some((b) => String(b.id || b.event_id).trim().toLowerCase() === eventIdStr)) {
+          return prev;
+        }
+        return [event, ...prev];
+      });
+    }
 
     const nextMood = applyVectorDrift(event, type, mood);
     setMood(nextMood);
 
-    await recordSwipe(type, event, activeHash, nextMood);
+    // Record swipe in background
+    recordSwipe(type, event, activeHash, nextMood);
 
     if (supabase) {
       supabase.from('event_conversions').insert({
@@ -350,23 +363,23 @@ export default function App() {
         target_novelty: Number(nextMood.novelty),
       }).catch((err) => console.error('Async conversion insert error:', err));
     }
-
-    if (['interested', 'totally_vibe', 'maybe_later'].includes(type)) {
-      refreshHistoryCount(activeHash);
-    }
-  }, [sessionKey, userHash, mood, refreshHistoryCount]);
+  }, [sessionKey, userHash, mood]);
 
   const handleUndo = useCallback(async () => {
     if (interactionStack.length === 0) return;
 
     const lastInteraction = interactionStack[interactionStack.length - 1];
-    const { event, previousMood } = lastInteraction;
+    const { event, previousMood, actionType } = lastInteraction;
 
     setRawEvents((prev) => [event, ...prev]);
 
     if (previousMood) {
       const restoredMood = setCurrentMood(previousMood);
       setMood(restoredMood);
+    }
+
+    if (['interested', 'totally_vibe', 'maybe_later'].includes(actionType)) {
+      setBookmarks((prev) => prev.filter((b) => String(b.id || b.event_id).trim().toLowerCase() !== String(event.id).trim().toLowerCase()));
     }
 
     try {
@@ -387,8 +400,7 @@ export default function App() {
     }
 
     setInteractionStack((prev) => prev.slice(0, -1));
-    refreshHistoryCount(activeUserIdentifier);
-  }, [interactionStack, sessionKey, userHash, refreshHistoryCount]);
+  }, [interactionStack, sessionKey, userHash]);
 
   const activeTopEvent = rankedEvents[0];
 
