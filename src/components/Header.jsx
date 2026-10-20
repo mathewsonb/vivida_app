@@ -52,7 +52,7 @@ export default function Header({
   }, []);
 
   // Use vibeCount directly to avoid double-counting if savedCount is also passed
-  const totalCount = vibeCount || savedCount;
+  const totalCount = (Number(vibeCount) || 0) + (Number(savedCount) || 0);
 
   return (
     <header className="sticky top-0 z-40 bg-parchment-50/95 backdrop-blur-md border-b border-parchment-200 shadow-sm">
