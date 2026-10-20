@@ -75,14 +75,35 @@ export default function App() {
     setMood(updated);
   }, []);
 
-  // Helper to keep bookmarks & badge counter synced with full database and local history
+  // Sync bookmarks state with full combined remote and local history
   const refreshHistoryCount = useCallback(async (hash = null) => {
     const activeHash = hash || userHash || localStorage.getItem('vivida_user_hash');
     const historyItems = await getUserHistory(activeHash);
     
     if (historyItems && Array.isArray(historyItems)) {
       const savedEvents = historyItems.map((item) => item.events || item.event_snapshot).filter(Boolean);
-      setBookmarks(savedEvents);
+      
+      setBookmarks((prev) => {
+        const combinedMap = new Map();
+        
+        // Load existing local state
+        prev.forEach((item) => {
+          const rawId = item?.id || item?.event_id;
+          if (rawId) {
+            combinedMap.set(String(rawId).trim().toLowerCase(), item);
+          }
+        });
+
+        // Merge remote items over local state
+        savedEvents.forEach((item) => {
+          const rawId = item?.id || item?.event_id;
+          if (rawId) {
+            combinedMap.set(String(rawId).trim().toLowerCase(), item);
+          }
+        });
+
+        return Array.from(combinedMap.values());
+      });
     }
   }, [userHash]);
 
@@ -159,7 +180,7 @@ export default function App() {
         .select('*')
         .range(0, 999);
 
-      // Pass raw comma-separated UUIDs to avoid 22P02 string-casting syntax error
+      // Pass raw comma-separated UUIDs
       if (swipedArray.length > 0) {
         query = query.not('id', 'in', `(${swipedArray.join(',')})`);
       }
@@ -170,7 +191,7 @@ export default function App() {
       const now = new Date();
       const localTodayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
-      // Normalized client-side filtering double-check
+      // Normalized client-side filtering check
       const validEvents = (data || []).filter((event) => {
         const eventIdStr = String(event.id).trim().toLowerCase();
         if (localSwipedIds.has(eventIdStr)) return false;
@@ -330,7 +351,6 @@ export default function App() {
       }).catch((err) => console.error('Async conversion insert error:', err));
     }
 
-    // Refresh history count after recording swipe to keep header counter accurate
     if (['interested', 'totally_vibe', 'maybe_later'].includes(type)) {
       refreshHistoryCount(activeHash);
     }
