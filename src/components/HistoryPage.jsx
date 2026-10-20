@@ -86,7 +86,7 @@ export default function HistoryPage({ onBack }) {
     return [];
   };
 
-  // 1. Build eventsByDate for ALL items first so tab counters equal exact rendered card totals
+  // Build eventsByDate for ALL items so tab counters equal rendered card totals
   const allEventsByDate = useMemo(() => {
     const map = { totally_vibe: {}, maybe_later: {} };
 
@@ -137,7 +137,7 @@ export default function HistoryPage({ onBack }) {
     return map;
   }, [historyItems, upcomingOnly, todayStr]);
 
-  // 2. Compute exact rendered card totals directly from the expanded date buckets
+  // Compute card totals for the tab labels directly from expanded date buckets
   const tabRenderedCounts = useMemo(() => {
     let vibeCount = 0;
     let laterCount = 0;

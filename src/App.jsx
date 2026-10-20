@@ -10,6 +10,9 @@ import HistoryPage from './components/HistoryPage';
 import { getCurrentMood, recordSwipe, setCurrentMood, applyVectorDrift, getFutureUserInteractions, getUserHistory } from './services/historyService';
 import { getOrCreateClientId } from './utils/session';
 
+// Helper for strict ID normalization across string, number, and UUID types
+const normalizeId = (id) => String(id ?? '').trim().toLowerCase();
+
 const calculateEuclideanSimilarity = (userMood, event) => {
   if (!userMood || !event) return 0;
 
@@ -59,9 +62,6 @@ export default function App() {
 
   const [interactionStack, setInteractionStack] = useState([]);
 
-  // Explicit count structure when HistoryPage reports expanded card totals
-  const [historyRenderedCounts, setHistoryRenderedCounts] = useState(null);
-
   const [bookmarks, setBookmarks] = useState(() => {
     try {
       const saved = localStorage.getItem('vivida_bookmarks');
@@ -78,30 +78,30 @@ export default function App() {
     setMood(updated);
   }, []);
 
-  // Sync bookmarks state with full combined remote and local history
+  // Sync bookmarks state with full combined remote and local history without duplicates
   const refreshHistoryCount = useCallback(async (hash = null) => {
     const activeHash = hash || userHash || localStorage.getItem('vivida_user_hash');
     const historyItems = await getUserHistory(activeHash);
     
     if (historyItems && Array.isArray(historyItems)) {
-      const savedEvents = historyItems.map((item) => item.events || item.event_snapshot).filter(Boolean);
-      
       setBookmarks((prev) => {
         const combinedMap = new Map();
         
-        // Load existing local state
         prev.forEach((item) => {
           const rawId = item?.id || item?.event_id;
           if (rawId) {
-            combinedMap.set(String(rawId).trim().toLowerCase(), item);
+            combinedMap.set(normalizeId(rawId), item);
           }
         });
 
-        // Merge remote items over local state
-        savedEvents.forEach((item) => {
-          const rawId = item?.id || item?.event_id;
+        historyItems.forEach((item) => {
+          const ev = item.events || item.event_snapshot;
+          const rawId = item?.id || item?.event_id || ev?.id;
           if (rawId) {
-            combinedMap.set(String(rawId).trim().toLowerCase(), item);
+            combinedMap.set(normalizeId(rawId), {
+              ...(ev || item),
+              action: item.action || item.interaction_type || 'totally_vibe'
+            });
           }
         });
 
@@ -151,32 +151,37 @@ export default function App() {
     try {
       if (!supabase) return;
 
-      const localSwipedIds = new Set();
+      const swipedIds = new Set();
       const activeUserIdentifier = overrideHash || userHash || localStorage.getItem('vivida_user_hash') || sessionKey || getOrCreateClientId();
 
-      // 1. Read local history IDs & normalize
+      // 1. Local storage swiped IDs
       try {
         const localHistory = JSON.parse(localStorage.getItem('vibe_history') || '[]');
         if (Array.isArray(localHistory)) {
           localHistory.forEach((item) => {
-            if (item?.event_id) localSwipedIds.add(String(item.event_id).trim().toLowerCase());
+            const rawId = item?.event_id || item?.id;
+            if (rawId) swipedIds.add(normalizeId(rawId));
           });
         }
       } catch (err) {
         console.warn('Failed to read vibe_history from localStorage:', err);
       }
 
-      // 2. Fetch past choices from Supabase using active user identifier
+      // 2. Database interactions swiped IDs
       if (activeUserIdentifier) {
-        const futureInteractions = await getFutureUserInteractions(activeUserIdentifier);
-        if (futureInteractions && futureInteractions.length > 0) {
-          futureInteractions.forEach((item) => {
-            if (item?.event_id) localSwipedIds.add(String(item.event_id).trim().toLowerCase());
+        const { data: remoteInteractions } = await supabase
+          .from('user_interactions')
+          .select('event_id')
+          .eq('user_id', activeUserIdentifier);
+
+        if (remoteInteractions) {
+          remoteInteractions.forEach((item) => {
+            if (item?.event_id) swipedIds.add(normalizeId(item.event_id));
           });
         }
       }
 
-      const swipedArray = Array.from(localSwipedIds);
+      const swipedArray = Array.from(swipedIds);
 
       let query = supabase
         .from('events')
@@ -193,9 +198,10 @@ export default function App() {
       const now = new Date();
       const localTodayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
+      // 3. Strict in-memory deduplication filter
       const validEvents = (data || []).filter((event) => {
-        const eventIdStr = String(event.id).trim().toLowerCase();
-        if (localSwipedIds.has(eventIdStr)) return false;
+        const eventIdStr = normalizeId(event.id);
+        if (swipedIds.has(eventIdStr)) return false;
 
         if (!event.schedule) return true;
         const dateList = extractDatesFromSchedule(event.schedule);
@@ -256,7 +262,6 @@ export default function App() {
       localStorage.removeItem('vibe_history');
       localStorage.removeItem('vivida_bookmarks');
       setBookmarks([]);
-      setHistoryRenderedCounts({ vibeCount: 0, savedCount: 0 });
       setInteractionStack([]);
 
       const activeUserIdentifier = userHash || localStorage.getItem('vivida_user_hash') || sessionKey;
@@ -289,7 +294,6 @@ export default function App() {
     setMood(defaultMood);
 
     setBookmarks([]);
-    setHistoryRenderedCounts({ vibeCount: 0, savedCount: 0 });
     setInteractionStack([]);
     setIsLocalResetModalOpen(false);
 
@@ -334,15 +338,15 @@ export default function App() {
       },
     ]);
 
-    setRawEvents((prev) => prev.filter((e) => String(e.id).trim().toLowerCase() !== String(event.id).trim().toLowerCase()));
+    setRawEvents((prev) => prev.filter((e) => normalizeId(e.id) !== normalizeId(event.id)));
 
     if (['interested', 'totally_vibe', 'maybe_later'].includes(type)) {
       setBookmarks((prev) => {
-        const eventIdStr = String(event.id).trim().toLowerCase();
-        if (prev.some((b) => String(b.id || b.event_id).trim().toLowerCase() === eventIdStr)) {
+        const eventIdStr = normalizeId(event.id);
+        if (prev.some((b) => normalizeId(b.id || b.event_id) === eventIdStr)) {
           return prev;
         }
-        return [event, ...prev];
+        return [{ ...event, action: type }, ...prev];
       });
     }
 
@@ -378,12 +382,12 @@ export default function App() {
     }
 
     if (['interested', 'totally_vibe', 'maybe_later'].includes(actionType)) {
-      setBookmarks((prev) => prev.filter((b) => String(b.id || b.event_id).trim().toLowerCase() !== String(event.id).trim().toLowerCase()));
+      setBookmarks((prev) => prev.filter((b) => normalizeId(b.id || b.event_id) !== normalizeId(event.id)));
     }
 
     try {
       const history = JSON.parse(localStorage.getItem('vibe_history') || '[]');
-      const filteredHistory = history.filter((item) => String(item.event_id).trim().toLowerCase() !== String(event.id).trim().toLowerCase());
+      const filteredHistory = history.filter((item) => normalizeId(item.event_id) !== normalizeId(event.id));
       localStorage.setItem('vibe_history', JSON.stringify(filteredHistory));
     } catch (err) {
       console.warn('Failed to revert vibe_history in localStorage:', err);
@@ -403,15 +407,10 @@ export default function App() {
 
   const activeTopEvent = rankedEvents[0];
 
-  // Derive counts directly from HistoryPage when reported, or fallback to local bookmarks state
-  const effectiveVibeCount = historyRenderedCounts ? historyRenderedCounts.vibeCount : bookmarks.length;
-  const effectiveSavedCount = historyRenderedCounts ? historyRenderedCounts.savedCount : 0;
-
   if (currentView === 'history') {
     return (
       <HistoryPage 
-        onBack={() => setCurrentView('deck')} 
-        onCountUpdate={(counts) => setHistoryRenderedCounts(counts)}
+        onBack={() => setCurrentView('deck')}
       />
     );
   }
@@ -424,8 +423,6 @@ export default function App() {
         onOpenSaved={() => setCurrentView('history')}
         onOpenHistory={() => setCurrentView('history')}
         onResetLocalHistory={() => setIsLocalResetModalOpen(true)}
-        vibeCount={effectiveVibeCount}
-        savedCount={effectiveSavedCount}
         hasUserHash={!!userHash}
       />
 

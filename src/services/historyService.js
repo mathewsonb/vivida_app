@@ -7,6 +7,9 @@ const VECTOR_DRIFT_ALPHA = 0.03; // Learning rate
 const MOOD_STORAGE_KEY = 'vivida_user_mood_vector';
 const HISTORY_STORAGE_KEY = 'vibe_history';
 
+// Helper for consistent ID normalization across string, number, and UUID types
+const normalizeId = (id) => String(id ?? '').trim().toLowerCase();
+
 // Default baseline mood vector
 const DEFAULT_MOOD = { energy: 0.5, social: 0.5, novelty: 0.5 };
 
@@ -132,10 +135,12 @@ export async function recordSwipe(action, event, userEmail = null, calculatedMoo
   const eSocial = Number(event?.social ?? event?.social_vector ?? 0.5);
   const eNovelty = Number(event?.novelty ?? event?.novelty_vector ?? 0.5);
 
+  const normalizedEventId = normalizeId(event.id);
+
   const entryPayload = {
     id: typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `hist_${Date.now()}`,
     user_id: userHash,
-    event_id: String(event.id).trim().toLowerCase(),
+    event_id: normalizedEventId,
     action: action,
     created_at: new Date().toISOString(),
     mood_snapshot: newMoodVector,
@@ -158,10 +163,10 @@ export async function recordSwipe(action, event, userEmail = null, calculatedMoo
     events: event
   };
 
-  // LocalStorage entry sync
+  // LocalStorage entry sync (Strict index check using normalized ID)
   try {
     const localHistory = JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY) || '[]');
-    const existingIndex = localHistory.findIndex((item) => String(item.event_id).trim().toLowerCase() === String(event.id).trim().toLowerCase());
+    const existingIndex = localHistory.findIndex((item) => normalizeId(item.event_id || item.id) === normalizedEventId);
 
     if (existingIndex >= 0) {
       localHistory[existingIndex] = entryPayload;
@@ -177,7 +182,7 @@ export async function recordSwipe(action, event, userEmail = null, calculatedMoo
   if (supabase) {
     const dbRecord = {
       user_id: userHash,
-      event_id: String(event.id).trim().toLowerCase(),
+      event_id: normalizedEventId,
       action: action,
       created_at: entryPayload.created_at,
       mood_snapshot: newMoodVector,
@@ -199,7 +204,7 @@ export async function recordSwipe(action, event, userEmail = null, calculatedMoo
 }
 
 /**
- * Fetch all user saved events ("View My Past Events") matching HistoryPage exactly
+ * Fetch all user saved events ("View My Past Events") without duplicates
  */
 export async function getUserHistory(userEmail = null) {
   const clientId = getOrCreateClientId();
@@ -225,7 +230,7 @@ export async function getUserHistory(userEmail = null) {
     }
   }
 
-  const eventIds = [...new Set(remoteInteractions.map((i) => String(i.event_id).trim().toLowerCase()))];
+  const eventIds = [...new Set(remoteInteractions.map((i) => normalizeId(i.event_id)))];
   let activeEventsMap = new Map();
 
   if (eventIds.length > 0 && supabase) {
@@ -237,7 +242,7 @@ export async function getUserHistory(userEmail = null) {
 
       if (eventsData) {
         eventsData.forEach((e) => {
-          activeEventsMap.set(String(e.id).trim().toLowerCase(), e);
+          activeEventsMap.set(normalizeId(e.id), e);
         });
       }
     } catch (err) {
@@ -259,7 +264,7 @@ export async function getUserHistory(userEmail = null) {
     if (['totally_vibe', 'maybe_later', 'interested'].includes(item.action)) {
       const rawId = item.event_id || item.events?.id || item.id;
       if (rawId) {
-        const idKey = String(rawId).trim().toLowerCase();
+        const idKey = normalizeId(rawId);
         combinedMap.set(idKey, {
           ...item,
           events: item.events || item.event_snapshot || {}
@@ -268,17 +273,19 @@ export async function getUserHistory(userEmail = null) {
     }
   });
 
-  // 2. Process Remote Database History
+  // 2. Process Remote Database History (Overwrites local duplicates for freshness)
   remoteInteractions.forEach((item) => {
-    const idKey = String(item.event_id).trim().toLowerCase();
+    const idKey = normalizeId(item.event_id);
     const activeEvent = activeEventsMap.get(idKey);
+    const existing = combinedMap.get(idKey) || {};
+
     combinedMap.set(idKey, {
+      ...existing,
       ...item,
-      events: activeEvent || item.event_snapshot || { id: item.event_id }
+      events: activeEvent || item.event_snapshot || existing.events || { id: item.event_id }
     });
   });
 
-  // Return all combined records so the badge count mirrors HistoryPage exactly
   return Array.from(combinedMap.values());
 }
 
@@ -303,7 +310,7 @@ export async function getFutureUserInteractions(userIdentifier = null) {
 
     if (intError || !interactions || interactions.length === 0) return [];
 
-    const eventIds = [...new Set(interactions.map((i) => String(i.event_id).trim().toLowerCase()))];
+    const eventIds = [...new Set(interactions.map((i) => normalizeId(i.event_id)))];
     const { data: events } = await supabase
       .from('events')
       .select('*')
@@ -312,7 +319,7 @@ export async function getFutureUserInteractions(userIdentifier = null) {
     const eventMap = new Map();
     if (events) {
       events.forEach((e) => {
-        eventMap.set(String(e.id).trim().toLowerCase(), e);
+        eventMap.set(normalizeId(e.id), e);
       });
     }
 
@@ -320,7 +327,7 @@ export async function getFutureUserInteractions(userIdentifier = null) {
     const futureInteractions = [];
 
     for (const item of interactions) {
-      const eventIdStr = String(item.event_id).trim().toLowerCase();
+      const eventIdStr = normalizeId(item.event_id);
       if (seenEventIds.has(eventIdStr)) continue;
 
       const activeEvent = eventMap.get(eventIdStr);
