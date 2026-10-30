@@ -1,0 +1,25 @@
+Section, Venue, Minutes, Seconds 
+Scrape, TD, 0, 8.3
+Scrape, EQC, 0, 11.3
+Scrape, PFG, 9, 41.6
+Scrape, TP, 5, 54.4
+Scrape, FW, 8, 25.0
+Scrape, MCM, 20, 12.0
+Scrape, PDZ, 2, 22.4
+Scrape, RPT, 6, 29.2
+Scrape, TCC, 21, 30.2
+Scrape, VAL, 1, 29.3
+Scrape, NF, 3, 30.0
+Scrape, JB, 2, 49.9
+Scrape, DPH, 3, 21.7
+Scrape, TPD, 0, 1.1
+Scrape, GH, 3, 23.6
+Scrape, TAM, 4, 54.6
+Scrape, TST, 0, 55.4
+Scrape, CNC, 0, 8.8
+Scrape, CUP, 0, 32.1
+Scrape, AMT, 0, 54.7
+Scrape, TAL, 6, 59.0
+Augmentation, Census API, 1, 14.9
+Augmentation, Category Mapping, 24, 48.5
+Classification, Mood Classifier, 18, 27.5
