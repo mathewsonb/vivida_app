@@ -129,7 +129,7 @@ export default function HistoryModal({
               Sync History & Vibe Profile
             </h3>
             <p className="text-sm text-parchment-700 mb-6 leading-relaxed">
-              Enter your email to view your saved events and mood analytics. Your email address is immediately converted into a zero-PII cryptographic hash on your device—we never store or see your raw email.
+              Enter your email to view your saved events and mood analytics. Your email address is immediately converted into a cryptographic hash on your device, because we NEVER store or see your actual email.
             </p>
 
             <form onSubmit={handleOptIn} className="space-y-3">
