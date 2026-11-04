@@ -10,29 +10,33 @@ OUTPUT_DIR = os.path.join("dev", "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # 1. Target URL registry mapped to scraper module identifiers
+# ============================================================
+# NOTE: The 'id' values here should correspond to the scraper module names in the VM,
+# and should be the first part of each df output name in each scraper module.
 TASK_QUEUE = [
-    {"id": "tcd", "url": "https://www.tacomadome.org/events", "status": "pending"},
-    {"id": "pyf", "url": "https://www.thefair.com/events-calendar/", "status": "pending"},
-    {"id": "fwpaec", "url": "https://fwpaec.org/event-calendar/", "status": "pending"},
-    {"id": "eqc", "url": "https://emeraldqueen.com/tickets/", "status": "pending"},
-    {"id": "tcp", "url": "https://www.parkstacoma.gov/events/list/", "status": "pending"},
-    {"id": "mcm", "url": "https://www.mcmenamins.com/elks-temple/spanish-ballroom", "status": "pending"},
-    {"id": "pdza", "url": "https://www.pdza.org/events/", "status": "pending"},
-    {"id": "tcct", "url": "https://www.tacomacitytheaters.org/events", "status": "pending"},
-    {"id": "tccc", "url": "https://www.tacomacomedyclub.com/events", "status": "pending"},
-    {"id": "val", "url": "https://www.thevalleytacoma.com/new-events-1", "status": "pending"},
-    {"id": "nfl", "url": "https://www.newfrontierlounge.com/calendar#/events", "status": "pending"},
-    {"id": "jzb", "url": "https://jazzbones.com/#/events", "status": "pending"},
-    {"id": "dph", "url": "https://www.doylespublichouse.com/events", "status": "pending"},
-    {"id": "tpd", "url": "https://visitgigharbor.com/events-festivals/", "status": "pending"},
-    {"id": "gh", "url": "https://visitgigharbor.com/events-festivals/list/page/", "status": "pending"},
-    {"id": "tam", "url": "https://www.tacomaartmuseum.org/events/", "status": "pending"},
-    {"id": "tst", "url": "https://www.thespartavern.com/live-music", "status": "pending"},
-    {"id": "cnc", "url": "https://www.ciderandcedar.com/events", "status": "pending"},
-    {"id": "cup", "url": "https://www.cityofup.com/132/Events", "status": "pending"},
-    {"id": "tcam", "url": "https://calendar.time.ly/api/calendars/54705487/events", "status": "pending"},
-    {"id": "tcal", "url": "https://www.tacomaartslive.org/upcoming-events/", "status": "pending"},
-    {"id": "tcpc", "url": "https://www.visitpiercecounty.com/", "status": "pending"}
+    {"id": "td", "status": "pending"},
+    {"id": "eqc", "status": "pending"},
+    {"id": "pfg", "status": "pending"},
+    {"id": "tp", "status": "pending"},
+    {"id": "fw", "status": "pending"},
+    {"id": "mcm", "status": "pending"},
+    {"id": "pdz", "status": "pending"},
+    {"id": "rpt", "status": "pending"},
+    {"id": "tcc", "status": "pending"},
+    {"id": "val", "status": "pending"},
+    {"id": "nf", "status": "pending"},
+    {"id": "jb", "status": "pending"},
+    {"id": "dph", "status": "pending"},
+    {"id": "gh", "status": "pending"},
+    {"id": "tam", "status": "pending"},
+    {"id": "tst", "status": "pending"},
+    {"id": "tpd", "status": "pending"},
+    {"id": "cup", "status": "pending"},
+    {"id": "cnc", "status": "pending"},
+    {"id": "amt", "status": "pending"},
+    {"id": "tal", "status": "pending"},
+    {"id": "tpc", "status": "pending"},
+    {"id": "oo", "status": "pending"},
     # Add any additional URLs here...
 ]
 
