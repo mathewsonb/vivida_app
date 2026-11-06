@@ -1,10 +1,10 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-export default defineConfig(({ command }) => ({
+export default defineConfig({
   plugins: [react()],
-  // Sets '/' for local dev ('npm run dev') and '/vivida_app/' only when building ('npm run build')
-  base: process.env.NODE_ENV === 'production' ? '/vivida_app/' : '/',
+  // Root base path for both dev and custom subdomain deployment
+  base: '/',
   server: {
     port: 5173,
     open: true,
@@ -13,4 +13,4 @@ export default defineConfig(({ command }) => ({
     outDir: 'dist',
     sourcemap: false,
   },
-}));
+});
