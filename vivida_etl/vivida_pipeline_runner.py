@@ -30,12 +30,12 @@ logger = logging.getLogger("vivida_etl")
 class VividaIngestionPipeline:
     def __init__(self, table_name: str = "events"):
         self.table_name = table_name
-        self.supabase_url = os.getenv("SUPABASE_URL")
-        self.supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        self.supabase_url = os.getenv("VITE_SUPABASE_URL")
+        self.supabase_key = os.getenv("VITE_SUPABASE_SERVICE_KEY")
 
         if not self.supabase_url or not self.supabase_key:
             raise ValueError(
-                "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY environment variables."
+                "Missing VITE_SUPABASE_URL or VITE_SUPABASE_SERVICE_KEY environment variables."
             )
 
         self.client: Client = create_client(self.supabase_url, self.supabase_key)
