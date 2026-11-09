@@ -3,4 +3,4 @@ node_modules
 scraper
 src
 supabase
-utils
+vivida_etl

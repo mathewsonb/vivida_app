@@ -1,0 +1,31 @@
+{
+  "name": "Vivida Autonomous ETL Architecture",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11-bullseye",
+
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.linting.enabled": true,
+        "python.linting.pylintEnabled": false,
+        "python.linting.flake8Enabled": true,
+        "editor.formatOnSave": true
+      },
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "eamodio.gitlens"
+      ]
+    }
+  },
+
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y xvfb google-chrome-stable libgconf-2-4 libnss3 libatk-bridge2.0-0 libgtk-3-0 && pip install --upgrade pip && if [ -f requirements.txt ]; then pip install -r requirements.txt; fi",
+
+  "remoteEnv": {
+    "PYTHONUNBUFFERED": "1",
+    "DISPLAY": ":99"
+  },
+
+  "forwardPorts": [],
+  "postStartCommand": "Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &"
+}
