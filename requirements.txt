@@ -1,0 +1,30 @@
+# --- Core Data Processing & Transformation ---
+pandas>=2.0.0
+numpy>=1.24.0
+
+# --- Web Scraping & HTML Parsing ---
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+html5lib>=1.1
+
+# --- Browser Automation & Driver Utilities ---
+selenium>=4.10.0
+webdriver-manager>=4.0.0
+
+# --- HTTP & REST API Clients ---
+requests>=2.31.0
+urllib3>=2.0.0
+httpx>=0.24.0
+
+# --- Supabase & Database Integration ---
+supabase>=1.0.0
+postgrest>=0.10.0
+
+# --- System & Execution Utilities ---
+python-dateutil>=2.8.2
+pytz>=2023.3
+pydantic>=2.0.0
+
+# --- Code Quality & Linting (Dev) ---
+flake8>=6.0.0
+pylint>=2.17.0
