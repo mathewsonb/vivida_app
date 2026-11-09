@@ -9,14 +9,13 @@ description = "Vivida Event Pipeline and Scraper Helpers"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-"pandas",
+    "pandas",
     "numpy",
     "beautifulsoup4",
     "selenium",
     "undetected-chromedriver",
     "requests",
-    "supabase",
-    "selenium"
+    "supabase"
 ]
 
 [tool.setuptools.packages.find]
