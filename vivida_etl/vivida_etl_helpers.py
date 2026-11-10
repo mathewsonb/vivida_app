@@ -53,10 +53,12 @@ def fetch_event_text(soup: BeautifulSoup) -> Optional[str]:
     if not soup:
         return None
     try:
-        for element in soup(["script", "style", "nav", "header", "footer", "aside", "svg", "iframe"]):
+        # Create copy so original DOM isn't mutated unexpectedly
+        soup_copy = BeautifulSoup(str(soup), "html.parser")
+        for element in soup_copy(["script", "style", "nav", "header", "footer", "aside", "svg", "iframe", "form", "button"]):
             element.decompose()
             
-        text = soup.get_text(separator='\n', strip=True)
+        text = soup_copy.get_text(separator='\n', strip=True)
         patterns = [
             r"Cookie Policy.*",
             r"All rights reserved.*",
@@ -72,22 +74,22 @@ def fetch_event_text(soup: BeautifulSoup) -> Optional[str]:
 
 
 # --- 3. GEOCODING & CLEANING HELPERS ---
-@lru_cache(maxsize=1024)
+@lru_cache(maxsize=2048)
 def get_census_coordinates(address_string: str) -> Tuple[Optional[float], Optional[float]]:
     """Geocodes an address string to (Latitude, Longitude) with LRU memory caching."""
-    if not address_string or pd.isna(address_string):
+    if not address_string or pd.isna(address_string) or not str(address_string).strip():
         return (None, None)
         
     url = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress"
-    params = {"address": address_string, "benchmark": "Public_AR_Current", "format": "json"}
+    params = {"address": str(address_string).strip(), "benchmark": "Public_AR_Current", "format": "json"}
     
     try:
-        response = requests.get(url, params=params, timeout=10)
+        response = requests.get(url, params=params, timeout=8)
         if response.status_code == 200:
             matches = response.json().get("result", {}).get("addressMatches", [])
             if matches:
                 coords = matches[0]["coordinates"]
-                return (coords["y"], coords["x"])
+                return (float(coords["y"]), float(coords["x"]))
     except Exception:
         pass
         

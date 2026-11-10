@@ -1,16 +1,18 @@
 """
-scrape_mcmenamins.py
+mcmenaminsElksTemple.py
 Autonomous Scraper for McMenamins Elks Temple / Spanish Ballroom (Tacoma, WA).
 Refactored for Xvfb headless execution and isolated Supabase ingestion.
 """
 
 import logging
+import os
 import re
 import sys
 from typing import Optional
 
 from bs4 import BeautifulSoup
 import pandas as pd
+from pyvirtualdisplay import Display
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
@@ -27,7 +29,7 @@ from vivida_etl import (
 # Configure logging for VM execution
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+    format="%(asctime)s [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger("scrape_mcmenamins")
@@ -87,15 +89,22 @@ def extract_ticket_url(element) -> Optional[str]:
 
 def scraper() -> pd.DataFrame:
     """Scrapes McMenamins events using a single headless Chrome instance and returns raw DataFrame."""
-    logger.info(f"Starting McMenamins Elks Temple scrape from {TARGET_URL}...")
-    events_data = []
+    logger.info("==================================================================")
+    logger.info("[START] Initializing PyVirtualDisplay server for McMenamins scrape...")
+    logger.info("==================================================================")
+    
+    display = Display(visible=0, size=(1920, 1080))
+    display.start()
 
+    events_data = []
     driver = None
+
     try:
         chrome_opts = get_headless_chrome_options()
         driver = webdriver.Chrome(options=chrome_opts)
 
         # 1. Fetch main calendar container
+        logger.info(f"[SELENIUM NAV] Fetching main calendar grid: {TARGET_URL}")
         soup = fetch_rendered_page(driver, TARGET_URL, wait_selector="#full_calendar, div.calendar-item")
         if not soup:
             logger.error("Could not load main events calendar.")
@@ -108,12 +117,18 @@ def scraper() -> pd.DataFrame:
             element.decompose()
 
         event_items = target_section.find_all("div", class_=re.compile(r"^calendar-item"))
-        logger.info(f"Found {len(event_items)} calendar event cards.")
+        if not event_items:
+            logger.warning("[PARSER WARNING] Found 0 event cards matching class pattern 'calendar-item'.")
+            return pd.DataFrame()
+
+        logger.info(f"[PARSER SUCCESS] Found {len(event_items)} McMenamins event cards. Beginning detail traversal...")
 
         now = pd.Timestamp.now()
 
         # 2. Iterate event cards and step into detail pages
-        for event in event_items:
+        for idx, event in enumerate(event_items, start=1):
+            logger.info(f"--- [EVENT {idx}/{len(event_items)}] Parsing listing card & detail page ---")
+            
             item_data = {
                 "venue_name": DEFAULT_VENUE,
                 "address": DEFAULT_ADDRESS,
@@ -136,16 +151,20 @@ def scraper() -> pd.DataFrame:
             if time_p:
                 raw_time_str = time_p.get_text(strip=True)
                 try:
-                    # Formats usually like "Friday, Nov 15"
-                    parts = raw_time_str.split(",")
-                    date_body = parts[1].strip() if len(parts) > 1 else raw_time_str
-                    
-                    full_date_str = f"{date_body}, {now.year}"
+                    # Strip day names (e.g., "Friday, ")
+                    clean_date_str = re.sub(
+                        r"^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Mon|Tue|Wed|Thu|Fri|Sat|Sun)[s\,]?\s*",
+                        "",
+                        raw_time_str,
+                        flags=re.IGNORECASE
+                    ).strip()
+
+                    full_date_str = f"{clean_date_str}, {now.year}" if str(now.year) not in clean_date_str else clean_date_str
                     start_dt = pd.to_datetime(full_date_str, errors="coerce", format="mixed")
 
                     if pd.notnull(start_dt):
-                        if start_dt.month < now.month:
-                            start_dt = start_dt + pd.DateOffset(years=1)
+                        # if start_dt.month < now.month and str(now.year) not in clean_date_str:
+                        #     start_dt = start_dt + pd.DateOffset(years=1) # keep this commented out, since the date includes the year
                         item_data["start_time"] = [start_dt.strftime("%Y-%m-%d")]
                 except Exception as e:
                     logger.warning(f"Failed to parse date '{raw_time_str}': {e}")
@@ -173,6 +192,7 @@ def scraper() -> pd.DataFrame:
 
             # 3. Step into Detail Page for rich content
             if item_data["external_url"]:
+                logger.info(f"[DETAIL FETCH] Navigating to detail page: {item_data['external_url']}")
                 det_soup = fetch_rendered_page(
                     driver, 
                     item_data["external_url"], 
@@ -185,22 +205,36 @@ def scraper() -> pd.DataFrame:
                         det_soup.find("main") or 
                         det_soup
                     )
+
+                    # Fallback ticket link extraction from detail page if card button missed it
+                    if not item_data["ticket_link"]:
+                        t_btn = container.find(["a", "button"], href=re.compile(r"etix|ticket|buy", re.I)) or container.find(["a", "button"], class_=re.compile(r"uk-button-primary"))
+                        if t_btn:
+                            item_data["ticket_link"] = extract_ticket_url(t_btn)
+
                     rich_text = fetch_event_text(container)
                     if rich_text:
                         item_data["big_desc"] = re.sub(r"\s+", " ", rich_text)
                     else:
                         item_data["big_desc"] = item_data["description"]
+            else:
+                item_data["big_desc"] = item_data["description"]
 
             events_data.append(item_data)
+            logger.info(f"  Title     : {item_data['title']}")
+            logger.info(f"  Start Date: {item_data['start_time']}")
 
     except Exception as e:
-        logger.error(f"Error during headless browser execution loop: {e}")
+        logger.error(f"[FATAL ERROR] Exception encountered during scraping loop: {e}", exc_info=True)
     finally:
         if driver:
+            logger.info("[CLEANUP] Closing Chrome driver instance...")
             try:
                 driver.quit()
             except Exception:
                 pass
+        logger.info("[CLEANUP] Stopping PyVirtualDisplay server...")
+        display.stop()
 
     if not events_data:
         return pd.DataFrame()
@@ -209,16 +243,20 @@ def scraper() -> pd.DataFrame:
 
 
 if __name__ == "__main__":
-    logger.info("Executing McMenamins Elks Temple scraper task...")
+    logger.info("Executing McMenamins Elks Temple autonomous scraper task...")
     raw_df = scraper()
 
     if not raw_df.empty:
-        # Run autonomous pipeline transformation & Supabase upsert
+        logger.info("==================================================================")
+        logger.info(f"[PIPELINE HANDOFF] Passing {len(raw_df)} event records to VividaIngestionPipeline...")
+        logger.info("==================================================================")
+        
         pipeline = VividaIngestionPipeline(table_name="events")
         success = pipeline.run_standalone_pipeline(raw_df)
+        
         if success:
-            logger.info("McMenamins scraper execution completed successfully.")
+            logger.info("[PIPELINE SUCCESS] McMenamins scraper pipeline execution completed successfully.")
         else:
-            logger.error("McMenamins scraper pipeline execution reported errors.")
+            logger.error("[PIPELINE ERROR] McMenamins scraper pipeline execution reported errors.")
     else:
-        logger.warning("No events scraped. Exiting task.")
+        logger.warning("[EXIT] No events scraped. Pipeline handoff skipped.")

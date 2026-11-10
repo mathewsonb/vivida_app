@@ -81,10 +81,7 @@ def scraper() -> pd.DataFrame:
             element.decompose()
 
         # Flexible Popmenu selector list
-        event_items = soup.find_all(
-            ["div", "article", "li"], 
-            class_=re.compile(r"pm-calendar-event|popmenu|event-card|calendar-event", re.I)
-        )
+        event_items = soup.find_all("div", class_="col-md-4 col-xs-12 pm-calendar-event-card-wrapper")
         
         # Secondary fallback: find anchors with /events/ in href
         if not event_items:
