@@ -3,7 +3,6 @@ scrape_gig_harbor.py
 Autonomous Scraper for Visit Gig Harbor Events (The Events Calendar / Tribe).
 Refactored for Xvfb headless execution and isolated Supabase ingestion.
 """
-
 import logging
 import re
 import sys
@@ -35,7 +34,6 @@ logger = logging.getLogger("scrape_gig_harbor")
 BASE_LIST_URL = "https://visitgigharbor.com/events-festivals/list/page/"
 DEFAULT_VENUE = "Gig Harbor, WA"
 
-
 def fetch_rendered_page(driver: webdriver.Chrome, url: str, wait_selector: Optional[str] = None, timeout: int = 10) -> Optional[BeautifulSoup]:
     """Navigates active headless driver to target URL and returns pre-treated BeautifulSoup DOM."""
     try:
@@ -54,13 +52,15 @@ def fetch_rendered_page(driver: webdriver.Chrome, url: str, wait_selector: Optio
         logger.warning(f"Failed to fetch page '{url}': {e}")
         return None
 
-
 def scraper(max_pages: int = 5) -> pd.DataFrame:
     """Scrapes Visit Gig Harbor events using a single headless Chrome instance and returns raw DataFrame."""
     logger.info(f"Starting Visit Gig Harbor scrape (scanning up to {max_pages} pages)...")
+    
+    # Initialize container out of try block to avoid UnboundLocalError
+    events_data = []
     detail_urls = []
-
     driver = None
+
     try:
         chrome_opts = get_headless_chrome_options()
         driver = webdriver.Chrome(options=chrome_opts)
@@ -99,7 +99,6 @@ def scraper(max_pages: int = 5) -> pd.DataFrame:
         logger.info(f"Extracted {len(detail_urls)} unique event detail URLs.")
 
         now = pd.Timestamp.now()
-        events_data = []
 
         # 2. Iterate through detail URLs using the same driver instance
         for url in detail_urls:
@@ -149,11 +148,11 @@ def scraper(max_pages: int = 5) -> pd.DataFrame:
             if date_span:
                 raw_date_str = date_span.get_text(strip=True)
                 try:
-                    full_date_str = f"{raw_date_str}, {now.year}"
+                    full_date_str = f"{raw_date_str}, {now.year}" if str(now.year) not in raw_date_str else raw_date_str
                     start_dt = pd.to_datetime(full_date_str, errors="coerce", format="mixed")
                     
                     if pd.notnull(start_dt):
-                        if start_dt.month < now.month:
+                        if start_dt.month < now.month and str(now.year) not in raw_date_str:
                             start_dt = start_dt + pd.DateOffset(years=1)
                         item_data["start_time"] = [start_dt.strftime("%Y-%m-%d")]
                 except Exception as e:
@@ -211,13 +210,11 @@ def scraper(max_pages: int = 5) -> pd.DataFrame:
 
     return pd.DataFrame(events_data)
 
-
 if __name__ == "__main__":
     logger.info("Executing Visit Gig Harbor scraper task...")
     raw_df = scraper(max_pages=5)
 
     if not raw_df.empty:
-        # Run autonomous pipeline transformation & Supabase upsert
         pipeline = VividaIngestionPipeline(table_name="events")
         success = pipeline.run_standalone_pipeline(raw_df)
         if success:

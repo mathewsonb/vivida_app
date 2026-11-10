@@ -1,6 +1,7 @@
 LICENSE.md
 README.md
 pyproject.toml
+dev/clean_structure_html.py
 dev/tests/test_module_import.py
 node_modules/flatted/python/flatted.py
 scrapers/__init__.py

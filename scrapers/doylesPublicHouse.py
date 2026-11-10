@@ -1,5 +1,5 @@
 """
-scrape_doyles.py
+doylesPublicHouse.py
 Autonomous Scraper for Doyle's Public House (Tacoma, WA).
 Refactored for Xvfb headless execution and isolated Supabase ingestion.
 """
@@ -7,7 +7,9 @@ Refactored for Xvfb headless execution and isolated Supabase ingestion.
 import logging
 import re
 import sys
+import time
 from typing import Optional
+from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -38,18 +40,18 @@ DEFAULT_VENUE = "Doyle's Public House"
 DEFAULT_ADDRESS = "208 St. Helens Ave South, Tacoma, WA 98402"
 
 
-def fetch_rendered_page(driver: webdriver.Chrome, url: str, wait_selector: Optional[str] = None, timeout: int = 10) -> Optional[BeautifulSoup]:
-    """Navigates active headless driver to target URL and returns pre-treated BeautifulSoup DOM."""
+def fetch_rendered_page(driver: webdriver.Chrome, url: str, timeout: int = 12) -> Optional[BeautifulSoup]:
+    """Navigates active headless driver to target URL, scrolls to trigger JS rendering, and returns BeautifulSoup DOM."""
     try:
         driver.get(url)
-        if wait_selector:
-            try:
-                WebDriverWait(driver, timeout).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, wait_selector))
-                )
-            except Exception:
-                pass
+        time.sleep(3)  # Allow JS engine to bootstrap
         
+        # Scroll down to trigger dynamic loading
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+        time.sleep(2)
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(2)
+
         cleaned_html = clean_html_source(driver.page_source)
         return BeautifulSoup(cleaned_html, "html.parser")
     except Exception as e:
@@ -60,31 +62,40 @@ def fetch_rendered_page(driver: webdriver.Chrome, url: str, wait_selector: Optio
 def scraper() -> pd.DataFrame:
     """Scrapes Doyle's Public House events using a single headless Chrome instance and returns raw DataFrame."""
     logger.info(f"Starting Doyle's Public House scrape from {TARGET_URL}...")
+    
     events_data = []
-
     driver = None
+
     try:
         chrome_opts = get_headless_chrome_options()
         driver = webdriver.Chrome(options=chrome_opts)
 
-        # 1. Fetch main calendar page (Popmenu engine)
-        soup = fetch_rendered_page(driver, TARGET_URL, wait_selector="div.pm-calendar-event, div.pm-calendar-event-section-wrapper")
+        # 1. Fetch main calendar page
+        soup = fetch_rendered_page(driver, TARGET_URL)
         if not soup:
             logger.error("Could not load main events page.")
             return pd.DataFrame()
 
-        target_section = soup.find("div", class_=re.compile(r"pm-calendar-event-section-wrapper")) or soup
-        
         # Clean script/style nodes
-        for element in target_section(["script", "style"]):
+        for element in soup(["script", "style"]):
             element.decompose()
 
-        event_items = target_section.find_all("div", class_=re.compile(r"pm-calendar-event-card"))
-        logger.info(f"Found {len(event_items)} Popmenu event cards.")
+        # Flexible Popmenu selector list
+        event_items = soup.find_all(
+            ["div", "article", "li"], 
+            class_=re.compile(r"pm-calendar-event|popmenu|event-card|calendar-event", re.I)
+        )
+        
+        # Secondary fallback: find anchors with /events/ in href
+        if not event_items:
+            anchors = soup.find_all("a", href=re.compile(r"/events/"))
+            event_items = [a.find_parent(["div", "article", "li"]) or a for a in anchors]
+
+        logger.info(f"Found {len(event_items)} candidate event elements.")
 
         now = pd.Timestamp.now()
 
-        # 2. Iterate event cards and step into detail pages
+        # 2. Iterate event cards
         for event in event_items:
             item_data = {
                 "venue_name": DEFAULT_VENUE,
@@ -98,59 +109,48 @@ def scraper() -> pd.DataFrame:
                 "ticket_link": None
             }
 
-            # Extract Title & Relative/Absolute Link
-            h2_tag = event.find("h2")
-            if h2_tag:
-                anchor = h2_tag.find("a", href=True)
-                if anchor:
-                    item_data["title"] = anchor.get_text(strip=True)
-                    href = anchor["href"].strip()
-                    item_data["external_url"] = href if href.startswith("http") else f"{BASE_URL}{href}"
+            # Extract Title & Link
+            anchor = event.find("a", href=True) if event.name != "a" else event
+            heading = event.find(["h1", "h2", "h3", "h4", "h5", "div", "span"], class_=re.compile(r"title|header|name", re.I))
+            
+            if heading and heading.get_text(strip=True):
+                item_data["title"] = heading.get_text(strip=True)
+            elif anchor and anchor.get_text(strip=True):
+                item_data["title"] = anchor.get_text(strip=True)
 
-            # Extract Date Components (Month / Day)
-            month_tag = event.find("span", class_=re.compile(r"calendar-event-month"))
-            day_tag = event.find("span", class_=re.compile(r"calendar-event-date"))
+            if not item_data["title"] or len(item_data["title"]) < 3:
+                continue
+
+            if anchor and anchor.get("href"):
+                item_data["external_url"] = urljoin(BASE_URL, anchor["href"].strip())
+
+            # Extract Date Components
+            month_tag = event.find(["span", "div"], class_=re.compile(r"month", re.I))
+            day_tag = event.find(["span", "div"], class_=re.compile(r"date|day", re.I))
 
             if month_tag and day_tag:
                 month_str = month_tag.get_text(strip=True)
                 day_str = day_tag.get_text(strip=True)
-                
                 try:
                     raw_date_str = f"{month_str} {day_str}, {now.year}"
                     start_dt = pd.to_datetime(raw_date_str, errors="coerce", format="mixed")
-
                     if pd.notnull(start_dt):
-                        # Year boundary rollover check
                         if start_dt.month < now.month:
                             start_dt = start_dt + pd.DateOffset(years=1)
                         item_data["start_time"] = [start_dt.strftime("%Y-%m-%d")]
                 except Exception as e:
                     logger.warning(f"Failed to parse date '{month_str} {day_str}': {e}")
 
-            # Extract Primary Short Description
-            desc_div = event.find("div", class_=re.compile(r"pm-calendar-event-content-right"))
+            # Extract Description
+            desc_div = event.find(["div", "p", "span"], class_=re.compile(r"description|content|summary", re.I))
             if desc_div:
                 item_data["description"] = desc_div.get_text(separator=" ", strip=True)
+                item_data["big_desc"] = item_data["description"]
 
-            # Extract Card Image
+            # Extract Image
             img_tag = event.find("img", src=True)
             if img_tag and img_tag["src"]:
-                src = img_tag["src"].strip()
-                item_data["image_url"] = src if src.startswith("http") else f"{BASE_URL}{src}"
-
-            # 3. Step into Detail Page for expanded text content
-            if item_data["external_url"]:
-                det_soup = fetch_rendered_page(
-                    driver, 
-                    item_data["external_url"], 
-                    wait_selector="main#page-content, div.pm-event-details"
-                )
-                
-                if det_soup:
-                    main_content = det_soup.find("main", id="page-content") or det_soup
-                    rich_text = fetch_event_text(main_content)
-                    if rich_text:
-                        item_data["big_desc"] = re.sub(r"\s+", " ", rich_text)
+                item_data["image_url"] = urljoin(BASE_URL, img_tag["src"].strip())
 
             events_data.append(item_data)
 
@@ -174,7 +174,6 @@ if __name__ == "__main__":
     raw_df = scraper()
 
     if not raw_df.empty:
-        # Run autonomous pipeline transformation & Supabase upsert
         pipeline = VividaIngestionPipeline(table_name="events")
         success = pipeline.run_standalone_pipeline(raw_df)
         if success:

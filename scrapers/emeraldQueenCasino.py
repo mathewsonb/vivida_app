@@ -1,5 +1,5 @@
 """
-scrape_eqc.py
+emeraldQueenCasino.py
 Autonomous Scraper for Emerald Queen Casino (Tacoma, WA).
 Refactored for Xvfb headless execution and isolated Supabase ingestion.
 """
