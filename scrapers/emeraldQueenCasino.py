@@ -3,8 +3,8 @@ scrape_eqc.py
 Autonomous Scraper for Emerald Queen Casino (Tacoma, WA).
 Refactored for Xvfb headless execution and isolated Supabase ingestion.
 """
-
 import logging
+import os
 import re
 import sys
 from typing import Optional
@@ -13,6 +13,7 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import requests
 from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
@@ -38,7 +39,6 @@ TICKETS_URL = "https://emeraldqueen.com/tickets/"
 DEFAULT_VENUE = "Emerald Queen Casino"
 DEFAULT_ADDRESS = "2920 E R St, Tacoma, WA 98404"
 
-
 def fetch_rendered_detail(driver: webdriver.Chrome, url: str, wait_for_selector: str = "#section-content", timeout: int = 10) -> Optional[BeautifulSoup]:
     """Navigates driver to detail page and extracts cleaned BeautifulSoup DOM."""
     try:
@@ -56,7 +56,6 @@ def fetch_rendered_detail(driver: webdriver.Chrome, url: str, wait_for_selector:
     except Exception as e:
         logger.warning(f"Failed to fetch detail page for '{url}': {e}")
         return None
-
 
 def scraper() -> pd.DataFrame:
     """Scrapes Emerald Queen Casino events, enriches details via Selenium, and returns raw DataFrame."""
@@ -90,8 +89,15 @@ def scraper() -> pd.DataFrame:
     driver = None
     try:
         chrome_opts = get_headless_chrome_options()
-        driver = webdriver.Chrome(options=chrome_opts)
+        # Locate system Chrome binary if inside Devcontainer/Codespace
+        if os.path.exists("/usr/bin/google-chrome"):
+            chrome_opts.binary_location = "/usr/bin/google-chrome"
 
+        driver = webdriver.Chrome(options=chrome_opts)
+    except Exception as err:
+        logger.warning(f"Headless Chrome driver creation failed ({err}). Proceeding with primary card metadata extraction.")
+
+    try:
         for event in event_items:
             item_data = {
                 "venue_name": DEFAULT_VENUE,
@@ -127,8 +133,8 @@ def scraper() -> pd.DataFrame:
                 if src:
                     item_data["image_url"] = src if src.startswith("http") else f"{BASE_URL}{src}"
 
-            # Fetch enriched details using headless driver
-            if item_data["external_url"]:
+            # Fetch enriched details using headless driver if available
+            if driver and item_data["external_url"]:
                 det_soup = fetch_rendered_detail(driver, item_data["external_url"])
                 if det_soup:
                     # Find Ticketmaster link if present
@@ -144,7 +150,7 @@ def scraper() -> pd.DataFrame:
             events_data.append(item_data)
 
     except Exception as e:
-        logger.error(f"Error during headless browser execution loop: {e}")
+        logger.error(f"Error during execution loop: {e}")
     finally:
         if driver:
             try:
@@ -166,7 +172,6 @@ def scraper() -> pd.DataFrame:
         ]
 
     return eqc_df
-
 
 if __name__ == "__main__":
     logger.info("Executing Emerald Queen Casino scraper task...")
