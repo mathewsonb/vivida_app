@@ -5,4 +5,3 @@ selenium
 undetected-chromedriver
 requests
 supabase
-selenium

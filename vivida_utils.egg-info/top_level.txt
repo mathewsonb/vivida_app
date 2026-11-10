@@ -1,6 +1,6 @@
 dev
 node_modules
-scraper
+scrapers
 src
 supabase
 vivida_etl
