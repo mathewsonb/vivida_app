@@ -1,27 +1,27 @@
 """
 theSparTavern.py
 Autonomous REST API Scraper for The Spar Tavern (Tacoma, WA).
-Fetches Google Calendar v3 events and routes directly to Supabase.
+Fetches Google Calendar v3 events directly via REST API, applies title casing to performers/venues,
+and routes records to VividaIngestionPipeline.
 """
 
 import logging
+import string
 import sys
-from typing import Optional
+from typing import Dict, List, Optional
 
 from bs4 import BeautifulSoup
 import pandas as pd
 import requests
 
-# Import consolidated vivida_etl package
 from vivida_etl import (
     VividaIngestionPipeline,
     clean_str,
 )
 
-# Configure logging for VM execution
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+    format="%(asctime)s [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger("scrape_spar_tavern")
@@ -35,6 +35,16 @@ DEFAULT_IMAGE_URL = (
 )
 
 
+def format_title_case(text: Optional[str]) -> Optional[str]:
+    """Formats raw strings into proper title casing while correctly handling apostrophes."""
+    if not text:
+        return None
+    clean_text = clean_str(text)
+    if not clean_text:
+        return None
+    return " ".join(string.capwords(word) for word in clean_text.split(" "))
+
+
 def extract_clean_text_from_html(html_content: Optional[str]) -> Optional[str]:
     """Strips HTML formatting tags from raw API description text."""
     if not html_content:
@@ -44,10 +54,9 @@ def extract_clean_text_from_html(html_content: Optional[str]) -> Optional[str]:
 
 
 def scraper(days_ahead: int = 30) -> pd.DataFrame:
-    """Queries Google Calendar v3 API for The Spar Tavern events and returns raw DataFrame."""
+    """Queries Google Calendar v3 API for The Spar Tavern events and returns populated DataFrame."""
     logger.info("Starting The Spar Tavern Google Calendar API fetch...")
 
-    # Calculate dynamic UTC timestamps for query window
     now = pd.Timestamp.now(tz="UTC")
     time_min = now.strftime("%Y-%m-%dT00:00:00Z")
     time_max = (now + pd.Timedelta(days=days_ahead)).strftime("%Y-%m-%dT23:59:59Z")
@@ -73,13 +82,13 @@ def scraper(days_ahead: int = 30) -> pd.DataFrame:
         response.raise_for_status()
         payload = response.json()
     except Exception as e:
-        logger.error(f"Failed to query Google Calendar API endpoint: {e}")
+        logger.error(f"Failed to query Google Calendar API endpoint: {e}", exc_info=True)
         return pd.DataFrame()
 
     items = payload.get("items", [])
     logger.info(f"Retrieved {len(items)} event items from Google Calendar API.")
 
-    events_data = []
+    events_data: List[Dict[str, Optional[str]]] = []
 
     for event in items:
         if event.get("status") == "cancelled":
@@ -88,47 +97,62 @@ def scraper(days_ahead: int = 30) -> pd.DataFrame:
         raw_summary = clean_str(event.get("summary"))
         raw_desc = extract_clean_text_from_html(event.get("description"))
 
-        title = f"{raw_summary} - {raw_desc}" if raw_summary and raw_desc else (raw_summary or raw_desc)
+        # Apply Title Casing to performer/event titles
+        title_raw = raw_summary or raw_desc
+        title = format_title_case(title_raw)
         if not title:
             continue
 
+        # Extract start and end times
+        start_obj = event.get("start", {})
+        end_obj = event.get("end", {})
+
+        is_all_day = "date" in start_obj and "dateTime" not in start_obj
+        raw_start = start_obj.get("dateTime") or start_obj.get("date")
+        raw_end = end_obj.get("dateTime") or end_obj.get("date")
+
+        start_time_seq = None
+        if raw_start:
+            dt_start = pd.to_datetime(raw_start, errors="coerce")
+            dt_end = pd.to_datetime(raw_end, errors="coerce") if raw_end else None
+
+            if pd.notnull(dt_start):
+                start_str = dt_start.strftime("%Y-%m-%d")
+                
+                # Google Calendar all-day events use exclusive end dates
+                if is_all_day and pd.notnull(dt_end):
+                    dt_end = dt_end - pd.Timedelta(days=1)
+
+                if pd.notnull(dt_end) and dt_end.date() > dt_start.date():
+                    end_str = dt_end.strftime("%Y-%m-%d")
+                    start_time_seq = [start_str, end_str]
+                else:
+                    start_time_seq = [start_str]
+
+        if not start_time_seq:
+            continue
+
+        # Build clean description payload and apply title casing to venue overrides
+        desc_text = raw_desc or title_raw
+        location_override = format_title_case(event.get("location"))
+        venue = location_override if location_override else DEFAULT_VENUE
+
         item_data = {
-            "venue_name": DEFAULT_VENUE,
+            "venue_name": venue,
             "address": DEFAULT_ADDRESS,
             "title": title,
-            "start_time": None,
-            "description": None,
-            "big_desc": None,
+            "start_time": start_time_seq,
+            "description": desc_text,
+            "big_desc": desc_text,
             "external_url": event.get("htmlLink", "").strip() or None,
             "image_url": DEFAULT_IMAGE_URL,
             "ticket_link": None
         }
 
-        # Date parsing
-        start_obj = event.get("start", {})
-        end_obj = event.get("end", {})
-
-        raw_start = start_obj.get("dateTime") or start_obj.get("date")
-        raw_end = end_obj.get("dateTime") or end_obj.get("date")
-
-        if raw_start:
-            dt_start = pd.to_datetime(raw_start, errors="coerce", format="mixed")
-            dt_end = pd.to_datetime(raw_end, errors="coerce", format="mixed") if raw_end else None
-
-            if pd.notnull(dt_start):
-                start_str = dt_start.strftime("%Y-%m-%d")
-                if pd.notnull(dt_end) and dt_end.date() > dt_start.date():
-                    end_str = dt_end.strftime("%Y-%m-%d")
-                    item_data["start_time"] = [start_str, end_str]
-                else:
-                    item_data["start_time"] = [start_str]
-
-        # Combine summary and description for full text
-        full_text = "\n".join(filter(None, [raw_summary, raw_desc, clean_str(event.get("location"))]))
-        item_data["description"] = full_text or title
-        item_data["big_desc"] = full_text or title
-
         events_data.append(item_data)
+        logger.info(f"  Title      : {item_data['title']}")
+        logger.info(f"  Venue      : {item_data['venue_name']}")
+        logger.info(f"  Start Time : {item_data['start_time']}")
 
     if not events_data:
         return pd.DataFrame()
@@ -141,12 +165,16 @@ if __name__ == "__main__":
     raw_df = scraper(days_ahead=30)
 
     if not raw_df.empty:
-        # Run autonomous pipeline transformation & Supabase upsert
+        logger.info("==================================================================")
+        logger.info(f"[PIPELINE HANDOFF] Passing {len(raw_df)} event records to VividaIngestionPipeline...")
+        logger.info("==================================================================")
+
         pipeline = VividaIngestionPipeline(table_name="events")
         success = pipeline.run_standalone_pipeline(raw_df)
+
         if success:
-            logger.info("The Spar Tavern scraper execution completed successfully.")
+            logger.info("[PIPELINE SUCCESS] The Spar Tavern scraper execution completed successfully.")
         else:
-            logger.error("The Spar Tavern scraper pipeline execution reported errors.")
+            logger.error("[PIPELINE ERROR] The Spar Tavern scraper pipeline execution reported errors.")
     else:
-        logger.warning("No events scraped. Exiting task.")
+        logger.warning("[EXIT] No events scraped. Pipeline handoff skipped.")

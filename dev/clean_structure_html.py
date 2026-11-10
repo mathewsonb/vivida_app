@@ -4,7 +4,7 @@ import pandas as pd
 import re
 
 # import the file and clean it, then write it back to itself
-input = "vivida_app/scraper_cache/rendered_html.html"
+input = "vivida_app/dev/sandbox.html"
 
 # open the source file in read mode
 with open(input, "r", encoding="utf-8") as io:

@@ -1,10 +1,12 @@
 """
 vivida_pipeline_runner.py
 Aligned Standalone ETL, AI Enrichment & Supabase Ingestion Module.
+Refactored with dual-description payload merging and boilerplate filtering for LLM cleaning.
 """
 import os
 import sys
 import json
+import math
 import logging
 import concurrent.futures
 from typing import List, Dict, Any, Optional, Literal
@@ -26,7 +28,7 @@ from .vivida_etl_helpers import (
 # Configure Logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+    format="%(asctime)s [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger("vivida_etl")
@@ -76,7 +78,7 @@ CATEGORY_GENRE_MAP: Dict[str, List[str]] = {
 }
 
 class CleanedEventDescription(BaseModel):
-    clean_summary: str = Field(description="Under 200 word structured summary")
+    clean_summary: str = Field(description="Under 200 word structured summary of the event content and activities")
     is_free: bool = Field(description="True if explicitly free entry or $0")
     age_restriction: Literal["Family", "All Ages", "18+", "21+", "Unknown"]
     indoor_outdoor: Literal["Indoor", "Outdoor", "Mixed", "Unknown"]
@@ -104,16 +106,17 @@ class CleanedEventDescription(BaseModel):
 
 SYSTEM_INSTRUCTION = """
 You are a high-precision event data extraction assistant.
-Analyze the raw scraped text and return a structured JSON response conforming strictly to the requested schema.
+Analyze the provided event details and raw source text, then return a structured JSON response conforming strictly to the requested schema.
 
-Guidelines:
-- Strip out website navigation, footers, cookie notices, and ads.
-- "clean_summary": Summarize the event concisely under 200 words.
-- "is_free": true if explicit $0/free; otherwise false.
-- "age_restriction": Choose one: "Family", "All Ages", "18+", "21+", or "Unknown".
-- "indoor_outdoor": Choose one: "Indoor", "Outdoor", "Mixed", or "Unknown".
-- "primary_category": Assign the SINGLE best fit from the allowed list.
-- "genre_or_subtype": Assign the most specific sub-genre belonging to the chosen primary_category.
+Guidelines & Filtering Rules:
+1. "clean_summary": Write a concise, engaging summary under 200 words focusing strictly on the event's activities, artist lineup, performance overview, or schedule.
+2. IGNORE and FILTER OUT ticketing disclaimers, venue policies, age disclaimers, and online fee statements (e.g., "price includes online fees", "all sales final", "no refunds"). Do NOT output meta-disclaimers stating that information was missing or only contained fee notices.
+3. If no detailed event description exists in the text beyond fine print, synthesize a clean 1-2 sentence overview based directly on the Event Title.
+4. "is_free": true if explicitly $0/free; otherwise false.
+5. "age_restriction": Choose one: "Family", "All Ages", "18+", "21+", or "Unknown".
+6. "indoor_outdoor": Choose one: "Indoor", "Outdoor", "Mixed", or "Unknown".
+7. "primary_category": Assign the SINGLE best fit from the allowed list.
+8. "genre_or_subtype": Assign the most specific sub-genre belonging to the chosen primary_category.
 """
 
 NOVELTY_SPECTRUM = {
@@ -151,6 +154,26 @@ CATEGORY_PRIORS = {
     "Workshops & Learning": {"energy": -0.10, "social": 0.05, "novelty": 0.20},
     "Social & Games": {"energy": 0.05, "social": 0.25, "novelty": 0.10},
 }
+
+
+def sanitize_json_value(val: Any) -> Any:
+    """Recursively replaces pandas/numpy NaNs and Infs with None for standard json compliance."""
+    if val is None:
+        return None
+    if isinstance(val, (float, np.floating)):
+        return None if (math.isnan(val) or math.isinf(val)) else float(val)
+    if isinstance(val, (int, np.integer)):
+        return int(val)
+    if isinstance(val, pd.Timestamp):
+        return val.isoformat()
+    if isinstance(val, dict):
+        return {k: sanitize_json_value(v) for k, v in val.items()}
+    if isinstance(val, list):
+        return [sanitize_json_value(v) for v in val]
+    if pd.isna(val):
+        return None
+    return val
+
 
 # --- 2. PIPELINE RUNNER CLASS ---
 class VividaIngestionPipeline:
@@ -192,9 +215,9 @@ class VividaIngestionPipeline:
                 self._classifier_pipeline = None
         return self._classifier_pipeline
 
-    def clean_scraped_description(self, raw_text: str) -> dict:
+    def clean_scraped_description(self, raw_text: str, title: str = "") -> dict:
         fallback = {
-            "clean_summary": raw_text[:1250] if raw_text else "",
+            "clean_summary": raw_text[:1250] if raw_text else title,
             "is_free": False,
             "age_restriction": "Unknown",
             "indoor_outdoor": "Unknown",
@@ -206,15 +229,16 @@ class VividaIngestionPipeline:
             return fallback
 
         try:
-            # Explicitly check for OLLAMA_HOST from environment or fallback to Docker host
-            ollama_host = os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434")
+            ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
             client = ollama.Client(host=ollama_host)
+            
+            prompt_content = f"EVENT TITLE: {title}\n\nRAW SCRAPED TEXT:\n{raw_text}" if title else f"RAW SCRAPED TEXT:\n{raw_text}"
             
             response = client.chat(
                 model="gemma3:4b",
                 messages=[
                     {"role": "system", "content": SYSTEM_INSTRUCTION},
-                    {"role": "user", "content": f"Clean and extract structured data from this raw scraped text:\n\n{raw_text}"},
+                    {"role": "user", "content": f"Extract structured data and clean the description from this event record:\n\n{prompt_content}"},
                 ],
                 format=CleanedEventDescription.model_json_schema(),
                 options={"temperature": 0.1, "num_ctx": 4096, "num_predict": 512},
@@ -227,14 +251,29 @@ class VividaIngestionPipeline:
             return fallback
 
     def process_event_batch_cleaning(self, df: pd.DataFrame, max_workers: int = 4) -> pd.DataFrame:
-        """Executes description cleaning in parallel."""
-        raw_texts = [
-            row.get("big_desc") or row.get("description") or "" 
-            for _, row in df.iterrows()
-        ]
+        """Executes description cleaning in parallel across combined payload strings."""
+        payload_tuples = []
+        
+        for _, row in df.iterrows():
+            title = str(row.get("title", "")).strip()
+            desc = str(row.get("description", "")).strip()
+            big_desc = str(row.get("big_desc", "")).strip()
+
+            # Merge description and big_desc, ensuring non-duplicate full context
+            blocks = []
+            for b in [desc, big_desc]:
+                if b and b != title and b not in blocks:
+                    blocks.append(b)
+
+            combined_payload = "\n\n".join(blocks) if blocks else (desc or big_desc or title)
+            payload_tuples.append((combined_payload, title))
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            results = list(executor.map(self.clean_scraped_description, raw_texts))
+            futures = [
+                executor.submit(self.clean_scraped_description, payload, title)
+                for payload, title in payload_tuples
+            ]
+            results = [f.result() for f in futures]
 
         df["clean_description"] = [r["clean_summary"] for r in results]
         df["is_free"] = [r["is_free"] for r in results]
@@ -317,9 +356,12 @@ class VividaIngestionPipeline:
 
     def sanitize_mood_score(self, val: Any) -> float:
         try:
-            if pd.isna(val) or val is None:
+            if val is None or pd.isna(val):
                 return 0.50
-            return round(max(0.00, min(1.00, float(val))), 2)
+            fval = float(val)
+            if math.isnan(fval) or math.isinf(fval):
+                return 0.50
+            return round(max(0.00, min(1.00, fval)), 2)
         except (ValueError, TypeError):
             return 0.50
 
@@ -398,19 +440,27 @@ class VividaIngestionPipeline:
                 address=str(first.get("address", ""))
             )
 
-            # Use LLM description if available; fallback to raw scraper description
             final_description = first.get("clean_description") or first.get("description")
+
+            def clean_coord(val):
+                if val is None or pd.isna(val):
+                    return None
+                try:
+                    fval = float(val)
+                    return None if (math.isnan(fval) or math.isinf(fval)) else fval
+                except (ValueError, TypeError):
+                    return None
 
             return pd.Series({
                 "id": event_id,
                 "title": str(title_val).strip(),
                 "venue_name": str(venue_val).strip(),
                 "address": first.get("address"),
-                "latitude": first.get("latitude"),
-                "longitude": first.get("longitude"),
+                "latitude": clean_coord(first.get("latitude")),
+                "longitude": clean_coord(first.get("longitude")),
                 "description": final_description,
                 "is_free": bool(first.get("is_free", False)),
-                "schedule": json.dumps(schedule_list),
+                "schedule": schedule_list,
                 "energy": self.sanitize_mood_score(first.get("energy")),
                 "social": self.sanitize_mood_score(first.get("social")),
                 "novelty": self.sanitize_mood_score(first.get("novelty")),
@@ -431,13 +481,15 @@ class VividaIngestionPipeline:
             logger.info("No records to upsert.")
             return 0
 
-        records = transformed_df.replace({np.nan: None}).to_dict(orient="records")
-        total_records = len(records)
+        raw_records = transformed_df.to_dict(orient="records")
+        sanitized_records = [sanitize_json_value(r) for r in raw_records]
+
+        total_records = len(sanitized_records)
         logger.info(f"Preparing to upsert {total_records} records into '{self.table_name}'...")
 
         upserted_count = 0
         for i in range(0, total_records, batch_size):
-            batch = records[i : i + batch_size]
+            batch = sanitized_records[i : i + batch_size]
             try:
                 response = self.client.table(self.table_name).upsert(
                     batch, on_conflict="id"
