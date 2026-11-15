@@ -7,6 +7,8 @@ from .vivida_etl_helpers import (
     clean_str,
     generate_event_id,
     get_headless_chrome_options,
+    expand_recurring_dates,
+    parse_event_dates,
 )
 from .vivida_pipeline_runner import VividaIngestionPipeline
 
@@ -17,5 +19,7 @@ __all__ = [
     "clean_str",
     "generate_event_id",
     "get_headless_chrome_options",
+    "expand_recurring_dates",
+    "parse_event_dates",
     "VividaIngestionPipeline",
 ]

@@ -1,11 +1,9 @@
 {
   "name": "Vivida Autonomous ETL Architecture",
   "image": "mcr.microsoft.com/devcontainers/python:3.11-bullseye",
-
   "features": {
     "ghcr.io/devcontainers/features/github-cli:1": {}
   },
-
   "customizations": {
     "vscode": {
       "settings": {
@@ -22,14 +20,13 @@
       ]
     }
   },
-
-  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y xvfb google-chrome-stable libgconf-2-4 libnss3 libatk-bridge2.0-0 libgtk-3-0 && pip install --upgrade pip && if [ -f requirements.txt ]; then pip install -r requirements.txt; fi",
-
+  "postCreateCommand": "sudo sed -i 's|deb.debian.org|archive.debian.org|g; s|security.debian.org|archive.debian.org|g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true && sudo rm -f /etc/apt/sources.list.d/yarn.list && sudo apt-get -o Acquire::Check-Valid-Until=false update && sudo apt-get install -y xvfb zstd libdbus-1-3 dbus-x11 libnss3 libatk-bridge2.0-0 libgtk-3-0 && wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && sudo apt-get install -y ./google-chrome-stable_current_amd64.deb && rm -f google-chrome-stable_current_amd64.deb && curl -fsSL https://ollama.com/install.sh | sh && (nohup ollama serve > /tmp/ollama.log 2>&1 &) && sleep 3 && ollama pull gemma3:4b && pip install --upgrade pip && if [ -f requirements.txt ]; then pip install --no-build-isolation -r requirements.txt; fi",
   "remoteEnv": {
     "PYTHONUNBUFFERED": "1",
-    "DISPLAY": ":99"
+    "DISPLAY": ":99",
+    "OLLAMA_HOST": "http://127.0.0.1:11434",
+    "OLLAMA_NUM_PARALLEL": "2"
   },
-
   "forwardPorts": [],
-  "postStartCommand": "Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &"
+  "postStartCommand": "(pgrep -x Xvfb > /dev/null || Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &) && (pgrep -x ollama > /dev/null || nohup ollama serve > /tmp/ollama.log 2>&1 &)"
 }

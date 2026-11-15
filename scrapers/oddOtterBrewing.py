@@ -48,11 +48,12 @@ def extract_clean_text_from_html(html_content: Optional[str]) -> Optional[str]:
 def scraper(days_ahead: int = 30) -> pd.DataFrame:
     """Queries Google Calendar v3 API for Odd Otter events and returns structured DataFrame."""
     logger.info("Starting Odd Otter Brewing Google Calendar API fetch...")
-    
+
     # Define time windows in valid ISO-8601 UTC format
     now = pd.Timestamp.now(tz="UTC")
     time_min = now.strftime("%Y-%m-%dT00:00:00Z")
-    time_max = (now + pd.Timedelta(days=days_ahead)).strftime("%Y-%m-%dT23:59:59Z")
+    time_max = (now + pd.Timedelta(days=days_ahead)
+                ).strftime("%Y-%m-%dT23:59:59Z")
     limit = 250
 
     api_url = (
@@ -68,8 +69,9 @@ def scraper(days_ahead: int = 30) -> pd.DataFrame:
         f"&key={API_KEY}"
     )
 
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
     try:
         response = requests.get(api_url, headers=headers, timeout=15)
         response.raise_for_status()
@@ -79,7 +81,8 @@ def scraper(days_ahead: int = 30) -> pd.DataFrame:
         return pd.DataFrame()
 
     items = payload.get("items", [])
-    logger.info(f"Retrieved {len(items)} event items from Google Calendar API.")
+    logger.info(
+        f"Retrieved {len(items)} event items from Google Calendar API.")
 
     events_data = []
 
@@ -108,13 +111,15 @@ def scraper(days_ahead: int = 30) -> pd.DataFrame:
         # 2. Date parsing (supporting both dateTime and date for all-day events)
         start_obj = event.get("start", {})
         end_obj = event.get("end", {})
-        
+
         raw_start = start_obj.get("dateTime") or start_obj.get("date")
         raw_end = end_obj.get("dateTime") or end_obj.get("date")
 
         if raw_start:
-            dt_start = pd.to_datetime(raw_start, errors="coerce", format="mixed")
-            dt_end = pd.to_datetime(raw_end, errors="coerce", format="mixed") if raw_end else None
+            dt_start = pd.to_datetime(
+                raw_start, errors="coerce", format="mixed")
+            dt_end = pd.to_datetime(
+                raw_end, errors="coerce", format="mixed") if raw_end else None
 
             if pd.notnull(dt_start):
                 start_str = dt_start.strftime("%Y-%m-%d")
@@ -127,12 +132,13 @@ def scraper(days_ahead: int = 30) -> pd.DataFrame:
         # 3. External HTML Link
         html_link = event.get("htmlLink")
         if html_link:
-            item_data["external_url"] = html_link.strip()
+            # html_link.strip()
+            item_data["external_url"] = "https://oddotterbeer.com/"
 
         # 4. Description & Rich Text Cleaning
         raw_desc = event.get("description")
         cleaned_desc = extract_clean_text_from_html(raw_desc)
-        
+
         if cleaned_desc:
             item_data["description"] = cleaned_desc
             item_data["big_desc"] = cleaned_desc
@@ -162,8 +168,10 @@ if __name__ == "__main__":
         pipeline = VividaIngestionPipeline(table_name="events")
         success = pipeline.run_standalone_pipeline(raw_df)
         if success:
-            logger.info("Odd Otter Brewing scraper execution completed successfully.")
+            logger.info(
+                "Odd Otter Brewing scraper execution completed successfully.")
         else:
-            logger.error("Odd Otter Brewing scraper pipeline execution reported errors.")
+            logger.error(
+                "Odd Otter Brewing scraper pipeline execution reported errors.")
     else:
         logger.warning("No events scraped. Exiting task.")
