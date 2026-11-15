@@ -1,33 +1,33 @@
 """
 tacomaArtsLive.py
-Autonomous Scraper for Tacoma Arts Live (Tacoma, WA).
-Refactored for Xvfb headless execution and isolated Supabase ingestion.
+Autonomous Production Scraper for Tacoma Arts Live (Tacoma, WA).
+Full-run pipeline: Xvfb + undetected_chromedriver for anti-bot evasion,
+dynamic grid hydration, deduplicated card parsing, detail page step-into traversals,
+and handoff to VividaIngestionPipeline for Supabase upserts.
 """
 
 import logging
+import os
 import re
 import sys
-from typing import Optional
+import time
+from typing import Dict, List, Optional, Set
 
 from bs4 import BeautifulSoup
 import pandas as pd
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
+from pyvirtualdisplay import Display
+import undetected_chromedriver as uc
 
-# Import consolidated vivida_etl package
+# Import consolidated vivida_etl pipeline package
 from vivida_etl import (
     VividaIngestionPipeline,
-    clean_html_source,
     fetch_event_text,
-    get_headless_chrome_options,
 )
 
-# Configure logging for VM execution
+# Configure stdout logging with explicit timestamps and line numbers
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+    format="%(asctime)s [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger("scrape_tacoma_arts_live")
@@ -37,176 +37,310 @@ TARGET_URL = "https://www.tacomaartslive.org/upcoming-events/"
 DEFAULT_VENUE = "Tacoma Arts Live"
 DEFAULT_ADDRESS = "901 Broadway, Tacoma, WA 98402"
 
+MONTH_NAMES = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)"
 
-def fetch_rendered_page(driver: webdriver.Chrome, url: str, wait_selector: Optional[str] = None, timeout: int = 10) -> Optional[BeautifulSoup]:
-    """Navigates active headless driver to target URL and returns pre-treated BeautifulSoup DOM."""
-    try:
-        driver.get(url)
-        if wait_selector:
-            try:
-                WebDriverWait(driver, timeout).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, wait_selector))
-                )
-            except Exception:
-                pass
+# Absolute path resolution for debugging sandbox dumps
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SANDBOX_PATH = (
+    os.path.join(os.path.dirname(BASE_DIR), "dev", "sandbox.html")
+    if os.path.basename(BASE_DIR) == "scrapers"
+    else os.path.join(BASE_DIR, "dev", "sandbox.html")
+)
+
+
+def create_stealth_driver() -> uc.Chrome:
+    """Instantiates an undetected Chrome driver configured for Xvfb display rendering."""
+    options = uc.ChromeOptions()
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--disable-gpu")
+    
+    if os.path.exists("/usr/bin/google-chrome"):
+        options.binary_location = "/usr/bin/google-chrome"
+    elif os.path.exists("/usr/bin/chromium"):
+        options.binary_location = "/usr/bin/chromium"
+
+    return uc.Chrome(options=options, version_main=None)
+
+
+def scroll_page_to_bottom(driver: uc.Chrome, max_scrolls: int = 10, pause_time: float = 2.5):
+    """Iteratively scrolls down the page to trigger dynamic AJAX loads for all upcoming events."""
+    logger.info("[SELENIUM SCROLL] Executing dynamic scroll loop to expose all event cards...")
+    last_height = driver.execute_script("return document.body.scrollHeight")
+    
+    for i in range(max_scrolls):
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(pause_time)
         
-        cleaned_html = clean_html_source(driver.page_source)
-        return BeautifulSoup(cleaned_html, "html.parser")
-    except Exception as e:
-        logger.warning(f"Failed to fetch page '{url}': {e}")
+        # Check for optional 'Load More' button clicks if present
+        try:
+            load_more_btns = driver.find_elements("css selector", "a.mec-load-more-button, .mec-load-more-wrap a, a.mec-button")
+            for btn in load_more_btns:
+                if btn.is_displayed():
+                    logger.info("[SELENIUM SCROLL] Clicking 'Load More' button...")
+                    driver.execute_script("arguments[0].click();", btn)
+                    time.sleep(pause_time)
+                    break
+        except Exception:
+            pass
+
+        new_height = driver.execute_script("return document.body.scrollHeight")
+        logger.info(f"[SELENIUM SCROLL] Frame {i+1}: Height shifted from {last_height}px to {new_height}px")
+        if new_height == last_height:
+            logger.info(f"[SELENIUM SCROLL] Page height stabilized after {i+1} scroll iterations.")
+            break
+            
+        last_height = new_height
+
+
+def parse_event_dates(date_text: str, now: pd.Timestamp) -> Optional[List[str]]:
+    """Multi-pattern date parser supporting single dates, day ranges, and month rollovers."""
+    if not date_text or pd.isna(date_text):
         return None
+
+    clean_str = re.sub(r"\s+", " ", str(date_text).strip())
+
+    # 1. Full date match with year (e.g., "Nov 21, 2026" or "November 21, 2026")
+    full_date_match = re.search(rf"\b{MONTH_NAMES}\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{4}}\b", clean_str, re.I)
+    if full_date_match:
+        dt = pd.to_datetime(full_date_match.group(0), errors="coerce")
+        if pd.notnull(dt):
+            return [dt.strftime("%Y-%m-%d")]
+
+    # 2. Month and Day match without year (e.g., "Saturday, Dec 5" or "Dec 5")
+    partial_date_match = re.search(rf"\b{MONTH_NAMES}\s+\d{{1,2}}(?:st|nd|rd|th)?\b", clean_str, re.I)
+    if partial_date_match:
+        full_str = f"{partial_date_match.group(0)}, {now.year}"
+        dt = pd.to_datetime(full_str, errors="coerce")
+        if pd.notnull(dt):
+            if dt.month < now.month:
+                dt = dt + pd.DateOffset(years=1)
+            return [dt.strftime("%Y-%m-%d")]
+
+    # 3. Handle Range Strings (e.g., "Dec 5 - 12" or "Nov 20 - Dec 2")
+    range_parts = re.split(r"\s*[-–—\bto\b]\s*", clean_str, flags=re.IGNORECASE)
+    try:
+        if len(range_parts) >= 2:
+            start_raw, end_raw = range_parts[0].strip(), range_parts[1].strip()
+            
+            if re.match(r"^\d{1,2}$", end_raw):
+                month_match = re.search(rf"\b{MONTH_NAMES}\b", start_raw, re.I)
+                if month_match:
+                    end_raw = f"{month_match.group(0)} {end_raw}"
+
+            start_dt = pd.to_datetime(start_raw, errors="coerce", format="mixed")
+            if pd.isnull(start_dt):
+                start_dt = pd.to_datetime(f"{start_raw}, {now.year}", errors="coerce", format="mixed")
+
+            end_dt = pd.to_datetime(end_raw, errors="coerce", format="mixed")
+            if pd.isnull(end_dt):
+                end_dt = pd.to_datetime(f"{end_raw}, {now.year}", errors="coerce", format="mixed")
+
+            if pd.notnull(start_dt) and pd.notnull(end_dt):
+                if start_dt.month < now.month:
+                    start_dt = start_dt + pd.DateOffset(years=1)
+                    end_dt = end_dt + pd.DateOffset(years=1)
+
+                if end_dt >= start_dt:
+                    diff_days = (end_dt.date() - start_dt.date()).days
+                    if diff_days <= 60:
+                        date_range = pd.date_range(start=start_dt.date(), end=end_dt.date(), freq="D")
+                        return [d.strftime("%Y-%m-%d") for d in date_range]
+                return [start_dt.strftime("%Y-%m-%d")]
+    except Exception as e:
+        logger.warning(f"Failed to parse date range text '{date_text}': {e}")
+
+    return None
 
 
 def scraper() -> pd.DataFrame:
-    """Scrapes Tacoma Arts Live events using a single headless Chrome instance and returns raw DataFrame."""
-    logger.info(f"Starting Tacoma Arts Live scrape from {TARGET_URL}...")
-    events_data = []
+    """Executes Stage 1 (full listing grid fetch) and Stage 2 (detail page traversals for ALL unique events)
+    using Xvfb + undetected_chromedriver.
+    """
+    logger.info("==================================================================")
+    logger.info("[START] Initializing PyVirtualDisplay server for full Tacoma Arts Live scrape...")
+    logger.info("==================================================================")
+    
+    display = Display(visible=0, size=(1920, 1080), backend="xvfb")
+    display.start()
 
     driver = None
-    try:
-        chrome_opts = get_headless_chrome_options()
-        driver = webdriver.Chrome(options=chrome_opts)
+    raw_records: List[Dict[str, Optional[str]]] = []
+    seen_urls: Set[str] = set()
 
-        # 1. Fetch main event grid page
-        soup = fetch_rendered_page(
-            driver, 
-            TARGET_URL, 
-            wait_selector="div.mec-skin-grid-events-container, div.mec-wrap"
-        )
-        if not soup:
-            logger.error("Could not load main events page.")
+    try:
+        logger.info("[SELENIUM] Launching undetected Chrome driver session...")
+        driver = create_stealth_driver()
+
+        # STAGE 1: Main Calendar Listing Grid Fetch & Dynamic Scroll
+        logger.info(f"[SELENIUM NAV] Fetching main calendar grid: {TARGET_URL}")
+        driver.get(TARGET_URL)
+        time.sleep(8)
+
+        scroll_page_to_bottom(driver)
+
+        main_html = driver.page_source
+        
+        # Dump raw source for diagnostic inspection
+        os.makedirs(os.path.dirname(SANDBOX_PATH), exist_ok=True)
+        with open(SANDBOX_PATH, "w", encoding="utf-8") as f:
+            f.write(main_html)
+            f.flush()
+        logger.info(f"[SANDBOX DUMP] Written raw DOM ({len(main_html)} bytes) to '{SANDBOX_PATH}'.")
+
+        soup = BeautifulSoup(main_html, "html.parser")
+
+        # Select specific inner article containers first to avoid nested wrapper duplication
+        event_cards = soup.select("article.mec-event-article")
+        if not event_cards:
+            event_cards = soup.select("div.col-md-4")
+
+        if not event_cards:
+            logger.warning("[PARSER WARNING] Found 0 event cards matching selector grid.")
             return pd.DataFrame()
 
-        target_section = (
-            soup.find("div", class_="mec-skin-grid-events-container") or 
-            soup.find("div", class_=re.compile(r"mec-wrap")) or 
-            soup
-        )
-        
-        # Clean script/style tags
-        for element in target_section(["script", "style"]):
-            element.decompose()
-
-        event_items = target_section.find_all("div", class_=re.compile(r"col-md-4|col-sm-4|mec-grid-item"))
-        logger.info(f"Found {len(event_items)} MEC event grid items.")
+        total_cards = len(event_cards)
+        logger.info(f"[PARSER SUCCESS] Found {total_cards} candidate MEC event cards. Starting full deduplicated traversal...")
 
         now = pd.Timestamp.now()
 
-        # 2. Iterate event cards and step into detail pages
-        for event in event_items:
-            item_data = {
-                "venue_name": DEFAULT_VENUE,
-                "address": DEFAULT_ADDRESS,
-                "title": None,
-                "start_time": None,
-                "description": None,
-                "big_desc": None,
-                "external_url": None,
-                "image_url": None,
-                "ticket_link": None
-            }
-
-            # Title & External URL
-            h4_tag = event.find("h4")
-            if h4_tag:
-                item_data["title"] = h4_tag.get_text(strip=True)
-                anchor = h4_tag.find("a", href=True)
-                if anchor:
-                    href = anchor["href"].strip()
-                    item_data["external_url"] = href if href.startswith("http") else f"{BASE_URL}{href if href.startswith('/') else '/' + href}"
-
-            # Venue Name & Address extraction from location paragraph
-            loc_p = event.find("p", class_=re.compile(r"mec-grid-event-location"))
-            if loc_p:
-                loc_text = loc_p.get_text(strip=True)
-                parts = loc_text.split(",")
-                if len(parts) > 0 and parts[0].strip():
-                    item_data["venue_name"] = parts[0].strip()
-                if len(parts) > 1:
-                    item_data["address"] = ", ".join(parts[1:]).strip()
-
-            # Date parsing with dynamic year rollover check
-            date_span = event.find("span", class_=re.compile(r"mec-start-date-label"))
-            if date_span:
-                raw_date_str = date_span.get_text(strip=True)
-                try:
-                    full_date_str = f"{raw_date_str} {now.year}"
-                    start_dt = pd.to_datetime(full_date_str, errors="coerce", format="mixed")
-                    
-                    if pd.notnull(start_dt):
-                        if start_dt.month < now.month:
-                            start_dt = start_dt + pd.DateOffset(years=1)
-                        item_data["start_time"] = [start_dt.strftime("%Y-%m-%d")]
-                except Exception as e:
-                    logger.warning(f"Failed to parse date string '{raw_date_str}': {e}")
-
-            # 3. Step into Detail Page for rich descriptions and image/ticket links
-            if item_data["external_url"]:
-                det_soup = fetch_rendered_page(
-                    driver, 
-                    item_data["external_url"], 
-                    wait_selector="div.elementor, div.entry-content, main"
-                )
+        # STAGE 2: Detail Page Traversal Loop Across Unique Events
+        for idx, card in enumerate(event_cards, start=1):
+            try:
+                # Title & Detail URL
+                title_el = card.find("h4", class_=re.compile(r"mec-event-title|title", re.I)) or card.find(["h4", "h3"])
+                link_tag = title_el.find("a", href=True) if title_el else card.find("a", href=True)
                 
-                if det_soup:
-                    container = (
-                        det_soup.find("div", class_=re.compile(r"elementor-widget-text-editor")) or 
-                        det_soup.find("div", class_="elementor") or 
-                        det_soup.find("div", class_="entry-content") or 
+                card_title = link_tag.get_text(strip=True) if link_tag else None
+                detail_url = link_tag.get("href") if link_tag else None
+                if detail_url and not detail_url.startswith("http"):
+                    detail_url = f"{BASE_URL}{detail_url if detail_url.startswith('/') else '/' + detail_url}"
+
+                if not card_title:
+                    continue
+
+                # Deduplication check: Skip if detail URL already processed in this run
+                dedup_key = detail_url or card_title
+                if dedup_key in seen_urls:
+                    logger.info(f"[DEDUP SKIP] Event '{card_title}' already processed. Skipping redundant traversal.")
+                    continue
+                seen_urls.add(dedup_key)
+
+                logger.info(f"--- [EVENT {len(seen_urls)}/{total_cards}] Processing unique event: {card_title} ---")
+
+                # Date
+                date_span = card.find("span", class_=re.compile(r"mec-start-date-label|date", re.I))
+                raw_date_str = date_span.get_text(strip=True) if date_span else None
+                start_time_list = parse_event_dates(raw_date_str, now)
+
+                # Location
+                loc_p = card.find("p", class_=re.compile(r"mec-grid-event-location|location", re.I))
+                venue_name = DEFAULT_VENUE
+                address = DEFAULT_ADDRESS
+                if loc_p:
+                    loc_parts = [p.strip() for p in loc_p.get_text(strip=True).split(",") if p.strip()]
+                    if len(loc_parts) >= 1:
+                        venue_name = loc_parts[0]
+                    if len(loc_parts) >= 2:
+                        address = ", ".join(loc_parts[1:])
+
+                # Image
+                img_tag = card.find("img", src=True)
+                image_url = None
+                if img_tag and img_tag["src"]:
+                    src = img_tag["src"].strip()
+                    image_url = src if src.startswith("http") else f"{BASE_URL}{src if src.startswith('/') else '/' + src}"
+
+                # Step into Detail Page
+                big_desc = card_title
+                description = card_title
+                ticket_link = detail_url
+
+                if detail_url:
+                    logger.info(f"  [DETAIL FETCH] Navigating to detail page: {detail_url}")
+                    driver.get(detail_url)
+                    time.sleep(3)
+                    
+                    det_soup = BeautifulSoup(driver.page_source, "html.parser")
+                    det_container = (
+                        det_soup.find("div", class_=re.compile(r"elementor-widget-text-editor|entry-content")) or 
+                        det_soup.find("main") or 
                         det_soup
                     )
 
-                    # Extract rich big description
-                    rich_text = fetch_event_text(container)
+                    if not start_time_list:
+                        det_date = det_soup.find("span", class_=re.compile(r"mec-start-date-label|date", re.I))
+                        if det_date:
+                            start_time_list = parse_event_dates(det_date.get_text(strip=True), now)
+
+                    rich_text = fetch_event_text(det_container)
                     if rich_text:
-                        item_data["big_desc"] = re.sub(r"\s+", " ", rich_text)
+                        big_desc = re.sub(r"\s+", " ", rich_text)
 
-                    # Extract primary short description
-                    p_tag = container.find("p")
+                    p_tag = det_container.find("p")
                     if p_tag:
-                        item_data["description"] = re.sub(r"\s+", " ", p_tag.get_text(strip=True, separator=" "))
+                        description = re.sub(r"\s+", " ", p_tag.get_text(strip=True, separator=" "))
                     else:
-                        item_data["description"] = item_data["big_desc"][:250] if item_data["big_desc"] else None
+                        description = big_desc[:250] if big_desc else card_title
 
-                    # Extract image URL safely
-                    img_tag = det_soup.find("img", src=True)
-                    if img_tag and img_tag["src"]:
-                        src = img_tag["src"].strip()
-                        item_data["image_url"] = src if src.startswith("http") else f"{BASE_URL}{src if src.startswith('/') else '/' + src}"
-
-                    # Extract ticket link (looking for buy/ticket links or noscript elements)
-                    t_anchor = det_soup.find("a", href=re.compile(r"ticket|buy|tessitura", re.IGNORECASE))
+                    t_anchor = det_soup.find("a", href=re.compile(r"ticket|buy|tessitura|ordertickets", re.IGNORECASE))
                     if t_anchor and t_anchor.get("href"):
-                        item_data["ticket_link"] = t_anchor["href"].strip()
+                        ticket_link = t_anchor["href"].strip()
 
-            events_data.append(item_data)
+                item_data = {
+                    "venue_name": venue_name,
+                    "address": address,
+                    "title": card_title,
+                    "start_time": start_time_list,
+                    "description": description,
+                    "big_desc": big_desc,
+                    "external_url": detail_url,
+                    "image_url": image_url,
+                    "ticket_link": ticket_link,
+                }
+
+                raw_records.append(item_data)
+                logger.info(f"  Title      : {item_data['title']}")
+                logger.info(f"  Start Time : {item_data['start_time']}")
+
+            except Exception as item_err:
+                logger.error(f"[ITEM ERROR] Failed parsing event #{idx}: {item_err}", exc_info=True)
+                continue
 
     except Exception as e:
-        logger.error(f"Error during headless browser execution loop: {e}")
+        logger.error(f"[FATAL ERROR] Exception encountered during scraping loop: {e}", exc_info=True)
     finally:
         if driver:
+            logger.info("[CLEANUP] Closing Chrome driver instance...")
             try:
                 driver.quit()
             except Exception:
                 pass
+        logger.info("[CLEANUP] Stopping PyVirtualDisplay server...")
+        display.stop()
 
-    if not events_data:
+    if not raw_records:
         return pd.DataFrame()
 
-    return pd.DataFrame(events_data)
+    return pd.DataFrame(raw_records)
 
 
 if __name__ == "__main__":
-    logger.info("Executing Tacoma Arts Live scraper task...")
+    logger.info("Executing Tacoma Arts Live clean scraper task...")
     raw_df = scraper()
 
     if not raw_df.empty:
-        # Run autonomous pipeline transformation & Supabase upsert
+        logger.info("==================================================================")
+        logger.info(f"[PIPELINE HANDOFF] Passing {len(raw_df)} unique event records to VividaIngestionPipeline...")
+        logger.info("==================================================================")
+        
         pipeline = VividaIngestionPipeline(table_name="events")
         success = pipeline.run_standalone_pipeline(raw_df)
+        
         if success:
-            logger.info("Tacoma Arts Live scraper execution completed successfully.")
+            logger.info("[PIPELINE SUCCESS] Tacoma Arts Live scraper execution completed successfully.")
         else:
-            logger.error("Tacoma Arts Live scraper pipeline execution reported errors.")
+            logger.error("[PIPELINE ERROR] Tacoma Arts Live scraper pipeline execution reported errors.")
     else:
-        logger.warning("No events scraped. Exiting task.")
+        logger.warning("[EXIT] No events scraped. Pipeline handoff skipped.")

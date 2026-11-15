@@ -1,22 +1,21 @@
 """
 pipeline_runner.py
 Master ETL Orchestrator & Test Execution Suite for Vivida Event Aggregation.
-Runs all 17 refactored scraper modules, collects metric telemetry, and executes
-idempotent upserts directly into Supabase.
+Runs all registered venue scrapers, collects metric telemetry, and executes
+idempotent upserts directly into Supabase via vivida_etl.
 """
+
 import importlib
 import logging
 import os
 import sys
 import time
-from typing import Dict, Any
+from typing import Any, Dict, List
 
 import pandas as pd
 
-# Import consolidated vivida_etl package
 from vivida_etl import VividaIngestionPipeline
 
-# Configure logging for master runner
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] (%(name)s) %(message)s",
@@ -24,8 +23,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("vivida_pipeline_runner")
 
-# Comprehensive list of all 17 scraper module targets
-SCRAPER_REGISTRY = [
+# Master Scraper Target Registry (23 active scraper modules)
+SCRAPER_REGISTRY: List[Dict[str, str]] = [
     {"name": "Emerald Queen Casino", "module": "scrapers.emeraldQueenCasino"},
     {"name": "Cider & Cedar", "module": "scrapers.ciderAndCedar"},
     {"name": "City of University Place", "module": "scrapers.cityOfUniversityPlace"},
@@ -51,9 +50,10 @@ SCRAPER_REGISTRY = [
     {"name": "The Valley Tacoma", "module": "scrapers.theValley"},
 ]
 
+
 def run_pipeline_test() -> Dict[str, Any]:
     """Runs end-to-end execution across all registered scrapers and reports metrics."""
-    logger.info("Starting master pipeline test execution for Supabase upsert verification...")
+    logger.info(f"Starting master pipeline test execution across {len(SCRAPER_REGISTRY)} registered scrapers...")
     start_time = time.time()
     
     pipeline = VividaIngestionPipeline(table_name="events")
@@ -75,7 +75,7 @@ def run_pipeline_test() -> Dict[str, Any]:
             # Dynamically import the scraper module
             mod = importlib.import_module(module_path)
             
-            # Execute scraper function
+            # Execute scraper entry point
             if hasattr(mod, "scraper"):
                 raw_df = mod.scraper()
             elif hasattr(mod, "scrape"):
@@ -88,7 +88,7 @@ def run_pipeline_test() -> Dict[str, Any]:
                 total_events_extracted += extracted_count
                 logger.info(f"Successfully scraped {extracted_count} raw events from {venue_name}.")
 
-                # Hand-off raw data to autonomous ingestion pipeline
+                # Handoff raw data to ingestion pipeline
                 success = pipeline.run_standalone_pipeline(raw_df)
                 if success:
                     status = "SUCCESS"
@@ -115,7 +115,7 @@ def run_pipeline_test() -> Dict[str, Any]:
 
     total_duration = round(time.time() - start_time, 2)
     
-    # Render Execution Telemetry Summary
+    # Render Execution Telemetry Summary Table
     logger.info("\n========================================================")
     logger.info("             MASTER PIPELINE EXECUTION SUMMARY          ")
     logger.info("========================================================")
@@ -135,15 +135,18 @@ def run_pipeline_test() -> Dict[str, Any]:
         "failed_scrapers": failed_scrapers
     }
 
+
 if __name__ == "__main__":
-    # Check Supabase Environment Credentials
+    # Check Supabase Environment Credentials across standard and Vite naming formats
     supabase_url = os.environ.get("VITE_SUPABASE_URL")
-    supabase_key = os.environ.get("VITE_SUPABASE_SERVICE_KEY")
+    supabase_key = (
+        os.environ.get("VITE_SUPABASE_SERVICE_KEY")
+    )
 
     if not supabase_url or not supabase_key:
         logger.warning(
-            "VITE_SUPABASE_URL or VITE_SUPABASE_SERVICE_KEY environment variables missing. "
-            "Pipeline will execute extraction logic, but database upserts may run in dry-run mode."
+            "Supabase credentials missing from environment. "
+            "Pipeline will execute extraction logic, but database upserts will run in fallback/dry-run mode."
         )
 
     results = run_pipeline_test()

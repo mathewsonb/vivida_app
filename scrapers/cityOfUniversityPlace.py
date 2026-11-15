@@ -1,13 +1,13 @@
 """
-scrape_city_of_up.py
+cityOfUniversityPlace.py
 Autonomous Scraper for City of University Place (WA) Events.
 Refactored for Xvfb headless execution and isolated Supabase ingestion.
 """
-
 import logging
 import re
 import sys
 from typing import Optional
+from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -20,7 +20,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from vivida_etl import (
     VividaIngestionPipeline,
     clean_html_source,
-    fetch_event_text,
     get_headless_chrome_options,
 )
 
@@ -35,7 +34,6 @@ logger = logging.getLogger("scrape_city_of_up")
 BASE_URL = "https://www.cityofup.com"
 TARGET_URL = "https://www.cityofup.com/132/Events"
 DEFAULT_VENUE = "University Place, WA"
-
 
 def fetch_rendered_page(driver: webdriver.Chrome, url: str, wait_selector: Optional[str] = None, timeout: int = 10) -> Optional[BeautifulSoup]:
     """Navigates active headless driver to target URL and returns pre-treated BeautifulSoup DOM."""
@@ -55,25 +53,25 @@ def fetch_rendered_page(driver: webdriver.Chrome, url: str, wait_selector: Optio
         logger.warning(f"Failed to fetch page '{url}': {e}")
         return None
 
-
 def scraper() -> pd.DataFrame:
     """Scrapes City of UP events using single headless Chrome instance and returns raw DataFrame."""
     logger.info(f"Starting City of University Place scrape from {TARGET_URL}...")
+    
+    # Outer scope initialization to prevent UnboundLocalError on driver failure
     events_data = []
-
     driver = None
+
     try:
         chrome_opts = get_headless_chrome_options()
         driver = webdriver.Chrome(options=chrome_opts)
 
         # 1. Fetch main calendar page
-        # Using resilient class-based selector instead of hardcoded widget GUID
-        soup = fetch_rendered_page(driver, TARGET_URL, wait_selector="div.calendarInnerWrapper, .cpGrid")
+        soup = fetch_rendered_page(driver, TARGET_URL, wait_selector="div.calendarInnerWrapper, .cpGrid, table.calendarTable")
         if not soup:
             logger.error("Could not load main events page.")
             return pd.DataFrame()
 
-        target_section = soup.find("div", class_="calendarInnerWrapper") or soup.find("div", class_=re.compile(r"cpGrid"))
+        target_section = soup.find("div", class_="calendarInnerWrapper") or soup.find("div", class_=re.compile(r"cpGrid")) or soup
         if not target_section:
             logger.warning("Could not locate calendar container on page.")
             return pd.DataFrame()
@@ -82,8 +80,12 @@ def scraper() -> pd.DataFrame:
         for element in target_section(["script", "style"]):
             element.decompose()
 
-        event_items = target_section.find_all("li")
-        logger.info(f"Found {len(event_items)} event cards in calendar view.")
+        event_items = target_section.find_all(["li", "tr", "div"], class_=re.compile(r"calendarItem|cpGridRow|eventItem"))
+        if not event_items:
+            # Fallback to generic li search if specific CivicPlus grid classes aren't matched
+            event_items = target_section.find_all("li")
+
+        logger.info(f"Found {len(event_items)} candidate event items in calendar view.")
 
         now = pd.Timestamp.now()
 
@@ -104,26 +106,35 @@ def scraper() -> pd.DataFrame:
             # Extract Title & Relative Link
             anchor = event.find("a", href=True)
             if anchor:
-                item_data["title"] = anchor.get_text(strip=True)
+                title_text = anchor.get_text(strip=True)
+                if not title_text or len(title_text) < 3:
+                    continue
+                item_data["title"] = title_text
                 href = anchor["href"].strip()
-                item_data["external_url"] = href if href.startswith("http") else f"{BASE_URL}{href}"
+                item_data["external_url"] = urljoin(BASE_URL, href)
+            else:
+                continue
 
             # Extract Raw Date Header
-            h4_tag = event.find("h4")
-            if h4_tag:
-                raw_date_str = h4_tag.get_text(strip=True)
+            date_tag = event.find(["h4", "h3", "span", "td"], class_=re.compile(r"date|calendarDate|dateHeader", re.I)) or event.find("h4")
+            if date_tag:
+                raw_date_str = date_tag.get_text(strip=True)
                 try:
-                    # Expecting formats like "Tuesday, November 15"
-                    date_parts = raw_date_str.split(",")
-                    if len(date_parts) > 1:
-                        date_body = date_parts[1].strip()
-                        start_dt = pd.to_datetime(f"{date_body}, {now.year}", errors="coerce", format="mixed")
-                        
-                        if pd.notnull(start_dt):
-                            # Year boundary rollover check
-                            if start_dt.month < now.month:
-                                start_dt = start_dt + pd.DateOffset(years=1)
-                            item_data["start_time"] = [start_dt.strftime("%Y-%m-%d")]
+                    # Strip day names (e.g., "Tuesday, ")
+                    clean_date_str = re.sub(
+                        r"^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Mon|Tue|Wed|Thu|Fri|Sat|Sun)[s\,]?\s*",
+                        "",
+                        raw_date_str,
+                        flags=re.IGNORECASE
+                    ).strip()
+
+                    full_date_str = f"{clean_date_str}, {now.year}" if str(now.year) not in clean_date_str else clean_date_str
+                    start_dt = pd.to_datetime(full_date_str, errors="coerce", format="mixed")
+                    
+                    if pd.notnull(start_dt):
+                        if start_dt.month < now.month and str(now.year) not in clean_date_str:
+                            start_dt = start_dt + pd.DateOffset(years=1)
+                        item_data["start_time"] = [start_dt.strftime("%Y-%m-%d")]
                 except Exception as e:
                     logger.warning(f"Failed to parse date string '{raw_date_str}': {e}")
 
@@ -132,14 +143,14 @@ def scraper() -> pd.DataFrame:
                 det_soup = fetch_rendered_page(
                     driver, 
                     item_data["external_url"], 
-                    wait_selector="div.eventDetails, div[itemprop='description']"
+                    wait_selector="div.eventDetails, div[itemprop='description'], .cpContent"
                 )
                 
                 if det_soup:
                     # Extract Venue & Address (itemprop="location")
-                    addr_soup = det_soup.find("div", itemprop="location")
+                    addr_soup = det_soup.find("div", itemprop="location") or det_soup.find("div", class_=re.compile(r"location|address", re.I))
                     if addr_soup:
-                        venue_name_tag = addr_soup.find("div", itemprop="name")
+                        venue_name_tag = addr_soup.find("div", itemprop="name") or addr_soup.find("span", itemprop="name")
                         if venue_name_tag:
                             item_data["venue_name"] = venue_name_tag.get_text(strip=True)
 
@@ -149,17 +160,14 @@ def scraper() -> pd.DataFrame:
                             zip_code = addr_soup.find("span", itemprop="postalCode").get_text(strip=True)
                             item_data["address"] = f"{street}, {city}, WA {zip_code}"
                         except Exception:
-                            # Fallback if specific itemprop spans are missing
                             item_data["address"] = addr_soup.get_text(separator=", ", strip=True)
 
                     # Extract Description
-                    desc_container = det_soup.find("div", itemprop="description")
+                    desc_container = det_soup.find("div", itemprop="description") or det_soup.find("div", class_=re.compile(r"eventDescription|cpContent"))
                     if desc_container:
-                        # Big description
                         raw_big_desc = desc_container.get_text(separator=" ", strip=True)
                         item_data["big_desc"] = re.sub(r"\s+", " ", raw_big_desc)
 
-                        # Primary short description (first paragraph)
                         p_tags = desc_container.find_all("p")
                         if p_tags:
                             item_data["description"] = p_tags[0].get_text(separator=" ", strip=True)
@@ -170,7 +178,7 @@ def scraper() -> pd.DataFrame:
                     img_tag = det_soup.find("img", src=True)
                     if img_tag and img_tag["src"]:
                         src = img_tag["src"].strip()
-                        item_data["image_url"] = src if src.startswith("http") else f"{BASE_URL}{src}"
+                        item_data["image_url"] = urljoin(BASE_URL, src)
 
             events_data.append(item_data)
 
@@ -188,13 +196,11 @@ def scraper() -> pd.DataFrame:
 
     return pd.DataFrame(events_data)
 
-
 if __name__ == "__main__":
     logger.info("Executing City of University Place scraper task...")
     raw_df = scraper()
 
     if not raw_df.empty:
-        # Run autonomous pipeline transformation & Supabase upsert
         pipeline = VividaIngestionPipeline(table_name="events")
         success = pipeline.run_standalone_pipeline(raw_df)
         if success:

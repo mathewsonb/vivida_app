@@ -1,9 +1,8 @@
 """
-scrape_cider_and_cedar.py
+ciderAndCedar.py
 Autonomous Scraper for Cider & Cedar (Tacoma, WA).
 Refactored for Xvfb headless execution and isolated Supabase ingestion.
 """
-
 import logging
 import re
 import sys
@@ -44,8 +43,8 @@ def scraper() -> pd.DataFrame:
     """Scrapes Cider & Cedar events from Squarespace layout and returns raw DataFrame."""
     logger.info(f"Starting Cider & Cedar scrape from {TARGET_URL}...")
     events_data = []
-
     driver = None
+
     try:
         chrome_opts = get_headless_chrome_options()
         driver = webdriver.Chrome(options=chrome_opts)
@@ -101,35 +100,47 @@ def scraper() -> pd.DataFrame:
         }
 
         # 1. Title
-        h2_tag = event.find("h2")
+        h2_tag = event.find(["h2", "h3", "h4"])
         if h2_tag:
             item_data["title"] = h2_tag.get_text(strip=True)
 
-        # 2. Date & Description Paragraphs
+        # 2. Extract Card Image if Available
+        img_tag = event.find("img", src=True) or event.find("img", attrs={"data-src": True})
+        if img_tag:
+            src_val = img_tag.get("src") or img_tag.get("data-src")
+            if src_val and str(src_val).startswith("http"):
+                item_data["image_url"] = src_val.strip()
+
+        # 3. Date & Description Paragraphs
         paragraphs = event.find_all("p")
         
         # Parse Date (Paragraph 0)
         if len(paragraphs) >= 1:
             raw_date_str = paragraphs[0].get_text(strip=True)
             try:
-                # Extract date text excluding day name (e.g., "Nov 15")
-                date_parts = raw_date_str.split(" ")
-                date_text = " ".join(date_parts[:-1]) if len(date_parts) > 1 else raw_date_str
-                
-                start_dt = pd.to_datetime(f"{date_text}, {now.year}", errors="coerce", format="mixed")
+                # Strip out day names like Monday, Tue, etc.
+                clean_date_str = re.sub(
+                    r"^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Mon|Tue|Wed|Thu|Fri|Sat|Sun)[s\,]?\s*",
+                    "",
+                    raw_date_str,
+                    flags=re.IGNORECASE
+                ).strip()
+
+                full_date_str = f"{clean_date_str}, {now.year}" if str(now.year) not in clean_date_str else clean_date_str
+                start_dt = pd.to_datetime(full_date_str, errors="coerce", format="mixed")
                 
                 if pd.notnull(start_dt):
-                    # Year-rollover adjustment if month is earlier than current month
-                    if start_dt.month < now.month:
+                    if start_dt.month < now.month and str(now.year) not in clean_date_str:
                         start_dt = start_dt + pd.DateOffset(years=1)
                     item_data["start_time"] = [start_dt.strftime("%Y-%m-%d")]
             except Exception as e:
                 logger.warning(f"Failed to parse date string '{raw_date_str}': {e}")
 
-        # Parse Description (Paragraph 1)
+        # Parse Description (Paragraph 1+)
         if len(paragraphs) >= 2:
-            desc_text = paragraphs[1].get_text(strip=True)
-            cleaned_desc = re.sub(r"\s+", " ", desc_text)
+            desc_parts = [p.get_text(strip=True) for p in paragraphs[1:] if p.get_text(strip=True)]
+            combined_desc = " ".join(desc_parts)
+            cleaned_desc = re.sub(r"\s+", " ", combined_desc)
             item_data["description"] = cleaned_desc
             item_data["big_desc"] = cleaned_desc
 
@@ -146,7 +157,6 @@ if __name__ == "__main__":
     raw_df = scraper()
 
     if not raw_df.empty:
-        # Run autonomous pipeline transformation & Supabase upsert
         pipeline = VividaIngestionPipeline(table_name="events")
         success = pipeline.run_standalone_pipeline(raw_df)
         if success:
