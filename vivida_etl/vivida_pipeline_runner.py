@@ -9,7 +9,7 @@ import logging
 import os
 import re
 import sys
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 import ollama
@@ -409,6 +409,7 @@ class VividaIngestionPipeline:
 
         self.client: Client = create_client(
             self.supabase_url, self.supabase_key)
+        self._last_superseded_ids: List[str] = []
 
     def sanitize_urls(self, url_str: Any) -> Optional[str]:
         if not url_str or pd.isna(url_str) or str(url_str).strip() in ["", "NULL", "none"]:
@@ -472,12 +473,16 @@ class VividaIngestionPipeline:
         event_ids: List[str],
         grouped_df: Optional[pd.DataFrame] = None,
         chunk_size: int = 100,
-    ) -> Dict[str, Dict[str, Any]]:
-        """Fetches already-enriched rows by ID first, with a (title, venue_name) fallback for shifted schedules."""
+    ) -> Tuple[Dict[str, Dict[str, Any]], List[str]]:
+        """
+        Fetches already-enriched rows by ID first, with a (title, venue_name) fallback
+        for shifted schedules. Returns (existing_map, superseded_old_ids).
+        """
         if not event_ids:
-            return {}
+            return {}, []
 
         existing: Dict[str, Dict[str, Any]] = {}
+        superseded_ids: List[str] = []
         select_cols = (
             "id, title, venue_name, description, is_free, energy, social, novelty, "
             "age_restriction, indoor_outdoor, genre, category"
@@ -506,7 +511,7 @@ class VividaIngestionPipeline:
             missed = grouped_df[~grouped_df["id"].isin(existing.keys())]
             if not missed.empty:
                 unique_titles = missed["title"].dropna().unique().tolist()
-                by_tv: Dict[tuple, Dict[str, Any]] = {}
+                by_tv: Dict[Tuple[str, str], Dict[str, Any]] = {}
                 for i in range(0, len(unique_titles), 50):
                     t_chunk = unique_titles[i: i + 50]
                     try:
@@ -534,12 +539,17 @@ class VividaIngestionPipeline:
                         str(mrow["venue_name"]).strip().lower(),
                     )
                     if key in by_tv:
-                        existing[mrow["id"]] = by_tv[key]
+                        matched_row = by_tv[key]
+                        existing[mrow["id"]] = matched_row
+                        old_id = str(matched_row.get("id", "")).strip()
+                        if old_id and old_id != mrow["id"]:
+                            superseded_ids.append(old_id)
 
         logger.info(
-            f"Cache lookup matched {len(existing)}/{len(event_ids)} events in '{self.table_name}'."
+            f"Cache lookup matched {len(existing)}/{len(event_ids)} events in '{self.table_name}' "
+            f"({len(superseded_ids)} shifted schedules)."
         )
-        return existing
+        return existing, superseded_ids
 
     def transform_raw_events(self, raw_df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -670,8 +680,12 @@ class VividaIngestionPipeline:
             .reset_index(drop=True)
         )
 
-        # 5. Split cached vs. unenriched events so we only run Ollama + BART on new records
-        existing_map = self.fetch_existing_enriched(grouped_df["id"].tolist())
+        # 5. Split cached vs. unenriched events so we only run Ollama + DistilBERT on new records
+        existing_map, superseded_ids = self.fetch_existing_enriched(
+            grouped_df["id"].tolist(), grouped_df=grouped_df
+        )
+        self._last_superseded_ids = superseded_ids
+
         is_cached = grouped_df["id"].isin(existing_map.keys())
         new_df = grouped_df[~is_cached].copy().reset_index(drop=True)
         cached_df = grouped_df[is_cached].copy().reset_index(drop=True)
@@ -781,12 +795,41 @@ class VividaIngestionPipeline:
         )
         return upserted_count
 
+    def cleanup_superseded_events(
+        self, superseded_ids: List[str], chunk_size: int = 100
+    ) -> int:
+        """Removes stale event rows whose schedule window shifted and was replaced by a new ID."""
+        unique_ids = sorted(set(i for i in superseded_ids if i))
+        if not unique_ids:
+            return 0
+
+        deleted_count = 0
+        for i in range(0, len(unique_ids), chunk_size):
+            chunk = unique_ids[i: i + chunk_size]
+            try:
+                self.client.table(self.table_name).delete().in_(
+                    "id", chunk).execute()
+                deleted_count += len(chunk)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to delete superseded event IDs chunk {i}: {e}"
+                )
+
+        if deleted_count:
+            logger.info(
+                f"Removed {deleted_count} superseded event row(s) from '{self.table_name}'."
+            )
+        return deleted_count
+
     def run_standalone_pipeline(self, raw_df: pd.DataFrame) -> bool:
         try:
             logger.info("Starting standalone VM ETL Pipeline execution...")
+            self._last_superseded_ids = []
             transformed_df = self.transform_raw_events(raw_df)
             if not transformed_df.empty:
-                self.upsert_to_supabase(transformed_df)
+                upserted = self.upsert_to_supabase(transformed_df)
+                if upserted > 0 and self._last_superseded_ids:
+                    self.cleanup_superseded_events(self._last_superseded_ids)
                 return True
             else:
                 logger.warning(
