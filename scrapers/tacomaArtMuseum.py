@@ -1,268 +1,567 @@
 """
 tacomaArtMuseum.py
 Autonomous Scraper for Tacoma Art Museum (Tacoma, WA).
-Refactored for Xvfb headless execution, multi-pattern date parsing, and isolated Supabase ingestion.
+Uses Tribe REST API / HTTP-first listing with automatic Xvfb/Chrome hydration fallback
+when cards render client-side, concurrent detail-page fetching (workers=10),
+and centralized parse_event_dates normalization.
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import glob
 import logging
-import os
 import re
+import shutil
 import sys
-from typing import Optional, List
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 from bs4 import BeautifulSoup
 import pandas as pd
-from pyvirtualdisplay import Display
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-# Import consolidated vivida_etl package
 from vivida_etl import (
     VividaIngestionPipeline,
     clean_html_source,
     fetch_event_text,
-    get_headless_chrome_options,
+    parse_event_dates,
 )
 
-# Configure logging for VM execution
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger("scrape_tam")
 
 BASE_URL = "https://www.tacomaartmuseum.org"
 TARGET_URL = "https://www.tacomaartmuseum.org/events/"
+TRIBE_API_URL = "https://www.tacomaartmuseum.org/wp-json/tribe/events/v1/events"
 DEFAULT_VENUE = "Tacoma Art Museum"
 DEFAULT_ADDRESS = "1701 Pacific Avenue, Tacoma, WA 98402"
 
-MONTH_NAMES = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)"
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 
-def fetch_rendered_page(driver: webdriver.Chrome, url: str, wait_selector: Optional[str] = None, timeout: int = 10) -> Optional[BeautifulSoup]:
-    """Navigates active headless driver to target URL and returns pre-treated BeautifulSoup DOM."""
-    try:
-        driver.get(url)
-        if wait_selector:
-            try:
-                WebDriverWait(driver, timeout).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, wait_selector))
-                )
-            except Exception:
-                pass
-        
-        cleaned_html = clean_html_source(driver.page_source)
-        return BeautifulSoup(cleaned_html, "html.parser")
-    except Exception as e:
-        logger.warning(f"Failed to fetch page '{url}': {e}")
+def normalize_ws(text: Optional[str]) -> str:
+    return re.sub(r"\s+", " ", (text or "").replace("\xa0", " ")).strip()
+
+
+def resolve_url(raw_url: Optional[str]) -> Optional[str]:
+    if not raw_url:
         return None
-
-
-def parse_event_dates(date_text: str, now: pd.Timestamp) -> Optional[List[str]]:
-    """Multi-pattern date parser supporting single dates, day ranges, and month rollovers."""
-    if not date_text or pd.isna(date_text):
+    clean = str(raw_url).strip()
+    if not clean or clean.startswith("#") or clean.lower().startswith("javascript:"):
         return None
+    if clean.startswith("//"):
+        return f"https:{clean}"
+    if clean.startswith("http://") or clean.startswith("https://"):
+        return clean
+    return f"{BASE_URL}{clean if clean.startswith('/') else '/' + clean}"
 
-    clean_str = re.sub(r"\s+", " ", str(date_text).strip())
 
-    # 1. Full date match with year (e.g., "December 5, 2026")
-    full_date_match = re.search(rf"\b{MONTH_NAMES}\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{4}}\b", clean_str, re.I)
-    if full_date_match:
-        dt = pd.to_datetime(full_date_match.group(0), errors="coerce")
-        if pd.notnull(dt):
-            return [dt.strftime("%Y-%m-%d")]
+def build_http_session(pool_size: int = 12) -> requests.Session:
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    retries = Retry(
+        total=2,
+        backoff_factor=0.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    adapter = HTTPAdapter(
+        max_retries=retries,
+        pool_connections=pool_size,
+        pool_maxsize=pool_size,
+    )
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
 
-    # 2. Month and Day match without year (e.g., "Saturday, Dec 5" or "Dec 5")
-    partial_date_match = re.search(rf"\b{MONTH_NAMES}\s+\d{{1,2}}(?:st|nd|rd|th)?\b", clean_str, re.I)
-    if partial_date_match:
-        full_str = f"{partial_date_match.group(0)}, {now.year}"
-        dt = pd.to_datetime(full_str, errors="coerce")
-        if pd.notnull(dt):
-            if dt.month < now.month:
-                dt = dt + pd.DateOffset(years=1)
-            return [dt.strftime("%Y-%m-%d")]
 
-    # 3. Handle Range Strings (e.g., "Dec 5 - 12" or "Nov 20 - Dec 2")
-    range_parts = re.split(r"\s*[-–—\bto\b]\s*", clean_str, flags=re.IGNORECASE)
+def create_stealth_driver():
+    """Lazy-instantiates undetected Chrome driver configured for Xvfb display rendering."""
+    import undetected_chromedriver as uc
+
+    options = uc.ChromeOptions()
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--disable-gpu")
+
+    cached_chrome = sorted(
+        glob.glob("/home/vscode/.cache/selenium/chrome/linux64/*/chrome")
+    )
+    chrome_bin = (
+        shutil.which("google-chrome")
+        or shutil.which("google-chrome-stable")
+        or shutil.which("chromium")
+        or shutil.which("chromium-browser")
+        or (cached_chrome[-1] if cached_chrome else None)
+    )
+    if chrome_bin:
+        options.binary_location = chrome_bin
+
+    return uc.Chrome(options=options, version_main=None)
+
+
+def strip_html_text(raw_html: Optional[str]) -> str:
+    if not raw_html:
+        return ""
+    soup = BeautifulSoup(clean_html_source(raw_html), "html.parser")
+    text = fetch_event_text(soup) or soup.get_text(" ", strip=True)
+    return normalize_ws(text)
+
+
+def normalize_tribe_group_key(detail_url: Optional[str], title: str) -> str:
+    """Groups recurring Tribe event occurrences (e.g. .../slug/2026-11-19/) under one canonical key."""
+    if detail_url:
+        stripped = re.sub(r"/\d{4}-\d{2}-\d{2}/?$", "", detail_url.rstrip("/"))
+        return stripped.lower()
+    return title.lower()
+
+
+def fetch_via_tribe_api(session: requests.Session, max_pages: int = 6) -> List[Dict[str, Any]]:
+    """Fast-path: queries WordPress Tribe Events REST API and merges recurring dates per event."""
+    grouped: Dict[str, Dict[str, Any]] = {}
+    now_str = pd.Timestamp.now(
+        tz="America/Los_Angeles").strftime("%Y-%m-%d 00:00:00")
+
+    for page in range(1, max_pages + 1):
+        resp = session.get(
+            TRIBE_API_URL,
+            params={"per_page": 50, "page": page, "start_date": now_str},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            break
+
+        data = resp.json()
+        events = data.get("events", []) if isinstance(data, dict) else []
+        if not events:
+            break
+
+        for ev in events:
+            title = strip_html_text(ev.get("title"))
+            if not title:
+                continue
+            detail_url = resolve_url(ev.get("url"))
+
+            raw_start = ev.get("start_date") or ""
+            raw_end = ev.get("end_date") or ""
+            dt_start = pd.to_datetime(raw_start, errors="coerce")
+            dt_end = pd.to_datetime(raw_end, errors="coerce")
+            if pd.isna(dt_start):
+                start_times = parse_event_dates(raw_start)
+            else:
+                s_iso = dt_start.strftime("%Y-%m-%d")
+                if pd.notnull(dt_end) and dt_end.date() > dt_start.date():
+                    start_times = parse_event_dates(
+                        f"{s_iso} - {dt_end.strftime('%Y-%m-%d')}"
+                    )
+                else:
+                    start_times = parse_event_dates(s_iso)
+
+            if not start_times:
+                continue
+
+            group_key = normalize_tribe_group_key(detail_url, title)
+            if group_key in grouped:
+                grouped[group_key]["dates_set"].update(start_times)
+                continue
+
+            short_desc = strip_html_text(ev.get("excerpt"))
+            full_desc = strip_html_text(ev.get("description"))
+            img_obj = ev.get("image") if isinstance(
+                ev.get("image"), dict) else {}
+
+            grouped[group_key] = {
+                "venue_name": DEFAULT_VENUE,
+                "address": DEFAULT_ADDRESS,
+                "title": title,
+                "dates_set": set(start_times),
+                "description": short_desc or full_desc or title,
+                "big_desc": full_desc or short_desc or title,
+                "external_url": detail_url,
+                "image_url": resolve_url(img_obj.get("url")),
+                "ticket_link": resolve_url(ev.get("website")) or detail_url,
+            }
+
+        total_pages = int(data.get("total_pages") or 1)
+        if page >= total_pages:
+            break
+
+    records: List[Dict[str, Any]] = []
+    for entry in grouped.values():
+        entry["start_time"] = sorted(entry.pop("dates_set"))
+        records.append(entry)
+    return records
+
+
+def extract_tam_dates(container: BeautifulSoup) -> List[str]:
+    """Extracts single or multi-day dates from TAM listing/detail date elements."""
+    if not container:
+        return []
+
+    for selector in [
+        container.find("div", class_=re.compile(
+            r"num|date|schedule|tribe-event-schedule", re.I)),
+        container.find("span", class_=re.compile(r"date|time", re.I)),
+        container.find("time"),
+    ]:
+        if selector:
+            raw_dt = selector.get(
+                "datetime") or selector.get_text(" ", strip=True)
+            dates = parse_event_dates(normalize_ws(raw_dt))
+            if dates:
+                return dates
+
+    # Fallback: scan full card text for date patterns
+    card_text = normalize_ws(container.get_text(" ", strip=True))
+    if card_text:
+        return parse_event_dates(card_text)
+    return []
+
+
+def find_event_candidates(soup: BeautifulSoup) -> List[BeautifulSoup]:
+    """Locates TAM event cards across Tribe, custom TAM main_column, or event link structures."""
+    target_section = soup.find(
+        "div", class_="main_column") or soup.find("main") or soup
+    for element in target_section(["script", "style"]):
+        element.decompose()
+
+    items = target_section.find_all(
+        ["li", "article", "div"],
+        class_=re.compile(r"event|tribe-events-item|type-tribe_events", re.I),
+    )
+    if items:
+        return items
+
+    # Custom TAM layout: <li> inside div.main_column or ul.events-list
+    main_col = soup.find("div", class_="main_column") or soup.find(
+        "ul", class_=re.compile(r"events", re.I))
+    if main_col:
+        li_items = main_col.find_all("li")
+        if li_items:
+            return li_items
+
+    # Fallback: anchors pointing to individual event detail pages
+    event_links = []
+    for a in target_section.find_all("a", href=True):
+        href = a["href"].strip()
+        if re.search(r"/events?/[^/?#]+", href, re.I) and not href.rstrip("/").endswith("/events"):
+            parent = a.find_parent(["li", "article", "div"]) or a
+            if parent not in event_links:
+                event_links.append(parent)
+    return event_links
+
+
+def parse_detail_html(
+    html: str,
+    current_dates: List[str],
+    card_title: str,
+    current_image: Optional[str],
+    detail_url: str,
+) -> Tuple[List[str], str, str, Optional[str], Optional[str]]:
+    """Extracts fallback dates, rich description text, summary, image, and ticket link."""
+    det_soup = BeautifulSoup(clean_html_source(html), "html.parser")
+    if not det_soup:
+        return current_dates, card_title, card_title, current_image, detail_url
+
+    dates = current_dates or extract_tam_dates(det_soup)
+
+    container = (
+        det_soup.find("div", class_=re.compile(
+            r"rtecontent|tribe-events-content|entry-content", re.I))
+        or det_soup.find("main")
+        or det_soup
+    )
+
+    rich_text = fetch_event_text(container)
+    big_desc = normalize_ws(rich_text) if rich_text else card_title
+
+    h3_tag = container.find("h3")
+    if h3_tag and normalize_ws(h3_tag.get_text(" ", strip=True)):
+        description = normalize_ws(h3_tag.get_text(" ", strip=True))
+    else:
+        p_tag = container.find("p")
+        if p_tag and normalize_ws(p_tag.get_text(" ", strip=True)):
+            description = normalize_ws(p_tag.get_text(" ", strip=True))
+        else:
+            description = big_desc[:250] if big_desc else card_title
+
+    image_url = current_image
+    if not image_url:
+        det_img = container.find("img", src=True) or det_soup.find(
+            "meta", property="og:image")
+        if det_img:
+            image_url = resolve_url(det_img.get(
+                "src") or det_img.get("content"))
+
+    ticket_link = detail_url
+    ticket_anchor = det_soup.find(
+        "a", href=re.compile(r"ticket|register|rsvp|buy", re.I))
+    if ticket_anchor and ticket_anchor.get("href"):
+        ticket_link = resolve_url(ticket_anchor["href"]) or detail_url
+
+    return dates, description, big_desc, image_url, ticket_link
+
+
+def fetch_detail_via_http(
+    session: requests.Session, item: Dict[str, Any]
+) -> Tuple[Dict[str, Any], bool]:
+    detail_url = item.get("external_url")
+    if not detail_url:
+        return item, True
+
     try:
-        if len(range_parts) >= 2:
-            start_raw, end_raw = range_parts[0].strip(), range_parts[1].strip()
-            
-            # Carry month forward if end_raw is just a day number (e.g. "Dec 5-8")
-            if re.match(r"^\d{1,2}$", end_raw):
-                month_match = re.search(rf"\b{MONTH_NAMES}\b", start_raw, re.I)
-                if month_match:
-                    end_raw = f"{month_match.group(0)} {end_raw}"
+        resp = session.get(detail_url, timeout=15)
+        resp.raise_for_status()
+        if len(resp.text) < 500:
+            return item, False
 
-            start_dt = pd.to_datetime(start_raw, errors="coerce", format="mixed")
-            if pd.isnull(start_dt):
-                start_dt = pd.to_datetime(f"{start_raw}, {now.year}", errors="coerce", format="mixed")
-
-            end_dt = pd.to_datetime(end_raw, errors="coerce", format="mixed")
-            if pd.isnull(end_dt):
-                end_dt = pd.to_datetime(f"{end_raw}, {now.year}", errors="coerce", format="mixed")
-
-            if pd.notnull(start_dt) and pd.notnull(end_dt):
-                if start_dt.month < now.month:
-                    start_dt = start_dt + pd.DateOffset(years=1)
-                    end_dt = end_dt + pd.DateOffset(years=1)
-
-                if end_dt >= start_dt:
-                    diff_days = (end_dt.date() - start_dt.date()).days
-                    if diff_days <= 60:
-                        date_range = pd.date_range(start=start_dt.date(), end=end_dt.date(), freq="D")
-                        return [d.strftime("%Y-%m-%d") for d in date_range]
-                return [start_dt.strftime("%Y-%m-%d")]
-    except Exception as e:
-        logger.warning(f"Failed to parse date range text '{date_text}': {e}")
-
-    return None
+        dates, description, big_desc, image_url, ticket_link = parse_detail_html(
+            resp.text,
+            item["start_time"],
+            item["title"],
+            item.get("image_url"),
+            detail_url,
+        )
+        item["start_time"] = dates
+        item["description"] = description
+        item["big_desc"] = big_desc
+        item["image_url"] = image_url
+        item["ticket_link"] = ticket_link
+        return item, True
+    except Exception:
+        return item, False
 
 
 def scraper() -> pd.DataFrame:
-    """Scrapes Tacoma Art Museum events using a single headless Chrome instance and returns raw DataFrame."""
-    logger.info("==================================================================")
-    logger.info("[START] Initializing PyVirtualDisplay server for Tacoma Art Museum scrape...")
-    logger.info("==================================================================")
+    """Scrapes Tacoma Art Museum events via API / HTTP-first with automatic Chrome hydration fallback."""
+    logger.info(f"[START] Scraping Tacoma Art Museum: {TARGET_URL}")
+    session = build_http_session(pool_size=12)
 
-    display = Display(visible=0, size=(1920, 1080))
-    display.start()
+    # 1. Probe Tribe REST API first
+    try:
+        api_records = fetch_via_tribe_api(session)
+        if api_records:
+            logger.info(
+                f"[TRIBE API SUCCESS] Retrieved {len(api_records)} unique TAM events via REST API."
+            )
+            return pd.DataFrame(api_records)
+    except Exception:
+        pass
 
-    events_data = []
+    display = None
     driver = None
+    event_items: List[BeautifulSoup] = []
+
+    def ensure_browser():
+        nonlocal display, driver
+        if driver is None:
+            from pyvirtualdisplay import Display
+
+            display = Display(visible=0, size=(1920, 1080), backend="xvfb")
+            display.start()
+            driver = create_stealth_driver()
+        return driver
 
     try:
-        chrome_opts = get_headless_chrome_options()
-        driver = webdriver.Chrome(options=chrome_opts)
+        # 2. HTTP-first listing fetch (verify hydrated cards exist before accepting)
+        try:
+            resp = session.get(TARGET_URL, timeout=15)
+            resp.raise_for_status()
+            soup_http = BeautifulSoup(
+                clean_html_source(resp.text), "html.parser")
+            candidates = find_event_candidates(soup_http)
+            if candidates:
+                event_items = candidates
+                logger.info(
+                    f"[HTTP FAST-PATH] Loaded Tacoma Art Museum events listing via HTTP ({len(event_items)} candidates)."
+                )
+            else:
+                logger.info(
+                    "[HTTP LISTING] Page shell loaded with 0 static event cards; launching Xvfb + Chrome for JS hydration..."
+                )
+        except Exception as http_err:
+            logger.warning(
+                f"[HTTP LISTING] Failed ({http_err}); launching Xvfb + Chrome fallback..."
+            )
 
-        logger.info(f"[SELENIUM NAV] Fetching main calendar page: {TARGET_URL}")
-        soup = fetch_rendered_page(driver, TARGET_URL, wait_selector="div.main_column, ul.events-list, li, .tribe-events-list")
-        
-        if not soup:
-            logger.error("Could not load main TAM events page.")
+        if not event_items:
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support import expected_conditions as EC
+            from selenium.webdriver.support.ui import WebDriverWait
+
+            drv = ensure_browser()
+            drv.get(TARGET_URL)
+            try:
+                WebDriverWait(drv, 12).until(
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR,
+                         "div.main_column, ul.events-list, .tribe-events-list, article")
+                    )
+                )
+            except Exception:
+                pass
+            time.sleep(3)
+            drv.execute_script(
+                "window.scrollTo(0, document.body.scrollHeight / 2);")
+            time.sleep(2)
+
+            soup_browser = BeautifulSoup(
+                clean_html_source(drv.page_source), "html.parser")
+            event_items = find_event_candidates(soup_browser)
+
+            ua = drv.execute_script("return navigator.userAgent;")
+            if ua:
+                session.headers.update({"User-Agent": ua})
+            for cookie in drv.get_cookies():
+                session.cookies.set(
+                    cookie["name"],
+                    cookie["value"],
+                    domain=cookie.get("domain"),
+                    path=cookie.get("path", "/"),
+                )
+
+        logger.info(
+            f"[PARSER SUCCESS] Found {len(event_items)} TAM candidate event list items.")
+        if not event_items:
             return pd.DataFrame()
 
-        target_section = soup.find("div", class_="main_column") or soup.find("main") or soup
-        
-        # Strip script and style tags
-        for element in target_section(["script", "style"]):
-            element.decompose()
-
-        event_items = target_section.find_all(["li", "article", "div"], class_=re.compile(r"event|tribe-events-item|type-tribe_events", re.I))
-        
-        # Fallback to general list items if no specific event containers found
-        if not event_items:
-            event_items = target_section.find_all("li")
-
-        logger.info(f"[PARSER SUCCESS] Found {len(event_items)} TAM candidate event list items.")
-
-        now = pd.Timestamp.now()
+        grouped_items: Dict[str, Dict[str, Any]] = {}
 
         for idx, event in enumerate(event_items, start=1):
-            item_data = {
-                "venue_name": DEFAULT_VENUE,
-                "address": DEFAULT_ADDRESS,
-                "title": None,
-                "start_time": None,
-                "description": None,
-                "big_desc": None,
-                "external_url": None,
-                "image_url": None,
-                "ticket_link": None
-            }
+            try:
+                anchor = event.find("a", href=True)
+                if not anchor:
+                    continue
 
-            # 1. Title & External URL Extraction
-            anchor = event.find("a", href=True)
-            if anchor:
-                href = anchor["href"].strip()
-                item_data["external_url"] = href if href.startswith("http") else f"{BASE_URL}{href if href.startswith('/') else '/' + href}"
-                
-                deets_div = anchor.find("div", class_=re.compile(r"deets|title|heading", re.I)) or event.find(["h3", "h2", "h4"])
-                if deets_div:
-                    item_data["title"] = re.sub(r"\s+", " ", deets_div.get_text(strip=True))
-                else:
-                    item_data["title"] = re.sub(r"\s+", " ", anchor.get_text(strip=True))
+                detail_url = resolve_url(anchor.get("href"))
+                if not detail_url or detail_url.rstrip("/") == TARGET_URL.rstrip("/"):
+                    continue
 
-            if not item_data["title"]:
-                continue
-
-            # 2. Date Parsing
-            date_container = event.find("div", class_=re.compile(r"num|date|time|tribe-event-schedule", re.I)) or event.find("span", class_=re.compile(r"date", re.I))
-            if date_container:
-                raw_date_str = date_container.get_text(strip=True)
-                item_data["start_time"] = parse_event_dates(raw_date_str, now)
-
-            # 3. Thumbnail Image from Listing Card
-            img_tag = event.find("img", src=True)
-            if img_tag and img_tag["src"]:
-                src = img_tag["src"].strip()
-                item_data["image_url"] = src if src.startswith("http") else f"{BASE_URL}{src if src.startswith('/') else '/' + src}"
-
-            # 4. Detail Page Fetch for Full Description & Metadata Fallback
-            if item_data["external_url"]:
-                logger.info(f"--- [EVENT {idx}] Detail Fetch: {item_data['external_url']} ---")
-                det_soup = fetch_rendered_page(
-                    driver, 
-                    item_data["external_url"], 
-                    wait_selector="div.rtecontent, div.tribe-events-content, main, article"
+                deets_div = anchor.find(
+                    "div", class_=re.compile(r"deets|title|heading", re.I)
+                ) or event.find(["h3", "h2", "h4"])
+                title = (
+                    normalize_ws(deets_div.get_text(" ", strip=True))
+                    if deets_div
+                    else normalize_ws(anchor.get_text(" ", strip=True))
                 )
-                
-                if det_soup:
-                    container = (
-                        det_soup.find("div", class_=re.compile(r"rtecontent|tribe-events-content|entry-content")) or 
-                        det_soup.find("main") or 
-                        det_soup
-                    )
-                    
-                    # Date fallback from detail page if listing card lacked explicit dates
-                    if not item_data["start_time"]:
-                        det_date = det_soup.find("div", class_=re.compile(r"date|schedule|time", re.I)) or det_soup.find("span", class_=re.compile(r"date", re.I))
-                        if det_date:
-                            item_data["start_time"] = parse_event_dates(det_date.get_text(strip=True), now)
+                if not title or len(title) < 3:
+                    continue
 
-                    # Rich text extraction for full description
-                    rich_text = fetch_event_text(container)
-                    if rich_text:
-                        item_data["big_desc"] = re.sub(r"\s+", " ", rich_text)
-                    else:
-                        item_data["big_desc"] = item_data["title"]
+                start_time_list = extract_tam_dates(event)
+                dedup_key = normalize_tribe_group_key(detail_url, title)
 
-                    # Short description summary
-                    h3_tag = container.find("h3")
-                    if h3_tag:
-                        item_data["description"] = h3_tag.get_text(separator=" ", strip=True)
-                    else:
-                        p_tag = container.find("p")
-                        if p_tag:
-                            item_data["description"] = p_tag.get_text(separator=" ", strip=True)
-                        else:
-                            item_data["description"] = item_data["big_desc"][:250] if item_data["big_desc"] else item_data["title"]
+                if dedup_key in grouped_items:
+                    grouped_items[dedup_key]["dates_set"].update(
+                        start_time_list)
+                    continue
 
-                    # High-res Detail Image Fallback
-                    if not item_data["image_url"]:
-                        det_img = container.find("img", src=True) or det_soup.find("meta", property="og:image")
-                        if det_img:
-                            src = det_img.get("src") or det_img.get("content")
-                            if src:
-                                src = src.strip()
-                                item_data["image_url"] = src if src.startswith("http") else f"{BASE_URL}{src if src.startswith('/') else '/' + src}"
+                img_tag = event.find("img", src=True) or event.find(
+                    "img", attrs={"data-src": True})
+                image_url = (
+                    resolve_url(img_tag.get("data-src") or img_tag.get("src"))
+                    if img_tag
+                    else None
+                )
 
-                    # Ticket / Registration Link
-                    ticket_anchor = det_soup.find("a", href=re.compile(r"ticket|register|rsvp|buy", re.I))
-                    if ticket_anchor and ticket_anchor.get("href"):
-                        item_data["ticket_link"] = ticket_anchor["href"].strip()
-            else:
-                item_data["big_desc"] = item_data["title"]
+                grouped_items[dedup_key] = {
+                    "venue_name": DEFAULT_VENUE,
+                    "address": DEFAULT_ADDRESS,
+                    "title": title,
+                    "dates_set": set(start_time_list),
+                    "description": title,
+                    "big_desc": title,
+                    "external_url": detail_url,
+                    "image_url": image_url,
+                    "ticket_link": detail_url,
+                }
+            except Exception as item_err:
+                logger.error(
+                    f"[ITEM ERROR] Failed parsing TAM event #{idx}: {item_err}", exc_info=True)
 
-            events_data.append(item_data)
-            logger.info(f"  Title     : {item_data['title']}")
-            logger.info(f"  Start Date: {item_data['start_time']}")
+        if not grouped_items:
+            return pd.DataFrame()
+
+        staged_items: List[Dict[str, Any]] = []
+        for entry in grouped_items.values():
+            entry["start_time"] = sorted(entry.pop("dates_set"))
+            staged_items.append(entry)
+
+        logger.info(
+            f"Batch-fetching {len(staged_items)} TAM detail pages via HTTP (workers=10)..."
+        )
+        enriched_items: List[Dict[str, Any]] = []
+        fallback_queue: List[Dict[str, Any]] = []
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [
+                executor.submit(fetch_detail_via_http, session, item)
+                for item in staged_items
+            ]
+            for fut in as_completed(futures):
+                updated_item, ok = fut.result()
+                if ok:
+                    enriched_items.append(updated_item)
+                else:
+                    fallback_queue.append(updated_item)
+
+        logger.info(
+            f"HTTP detail batch complete: {len(enriched_items)} parsed, "
+            f"{len(fallback_queue)} queued for Chrome fallback."
+        )
+
+        if fallback_queue:
+            drv = ensure_browser()
+            for item in fallback_queue:
+                detail_url = item.get("external_url")
+                if detail_url:
+                    try:
+                        drv.get(detail_url)
+                        time.sleep(2.5)
+                        dates, description, big_desc, image_url, ticket_link = parse_detail_html(
+                            drv.page_source,
+                            item["start_time"],
+                            item["title"],
+                            item.get("image_url"),
+                            detail_url,
+                        )
+                        item["start_time"] = dates
+                        item["description"] = description
+                        item["big_desc"] = big_desc
+                        item["image_url"] = image_url
+                        item["ticket_link"] = ticket_link
+                    except Exception as fb_err:
+                        logger.warning(
+                            f"[FALLBACK WARN] Failed {detail_url}: {fb_err}")
+                enriched_items.append(item)
+
+        raw_records = []
+        for item in enriched_items:
+            if not item.get("start_time"):
+                logger.warning(
+                    f"[SKIP] No valid dates parsed for '{item.get('title')}'.")
+                continue
+            raw_records.append(item)
+
+        return pd.DataFrame(raw_records) if raw_records else pd.DataFrame()
 
     except Exception as e:
-        logger.error(f"[FATAL ERROR] Error during browser execution loop: {e}", exc_info=True)
+        logger.error(
+            f"[FATAL ERROR] Error during TAM scraping loop: {e}", exc_info=True)
+        return pd.DataFrame()
     finally:
         if driver:
             logger.info("[CLEANUP] Closing Chrome driver instance...")
@@ -270,13 +569,12 @@ def scraper() -> pd.DataFrame:
                 driver.quit()
             except Exception:
                 pass
-        logger.info("[CLEANUP] Stopping PyVirtualDisplay server...")
-        display.stop()
-
-    if not events_data:
-        return pd.DataFrame()
-
-    return pd.DataFrame(events_data)
+        if display:
+            logger.info("[CLEANUP] Stopping PyVirtualDisplay server...")
+            try:
+                display.stop()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
@@ -284,16 +582,13 @@ if __name__ == "__main__":
     raw_df = scraper()
 
     if not raw_df.empty:
-        logger.info("==================================================================")
-        logger.info(f"[PIPELINE HANDOFF] Passing {len(raw_df)} event records to VividaIngestionPipeline...")
-        logger.info("==================================================================")
-        
         pipeline = VividaIngestionPipeline(table_name="events")
         success = pipeline.run_standalone_pipeline(raw_df)
-        
         if success:
-            logger.info("[PIPELINE SUCCESS] TAM scraper execution completed successfully.")
+            logger.info(
+                "[PIPELINE SUCCESS] TAM scraper execution completed successfully.")
         else:
-            logger.error("[PIPELINE ERROR] TAM scraper pipeline execution reported errors.")
+            logger.error(
+                "[PIPELINE ERROR] TAM scraper pipeline execution reported errors.")
     else:
         logger.warning("[EXIT] No events scraped. Pipeline handoff skipped.")

@@ -37,6 +37,8 @@ logger = logging.getLogger("vivida_etl")
 # 1. PREPROCESSOR SCHEMA & OLLAMA EXTRACTION
 # ==============================================================================
 
+OLLAMA_MODEL = "gemma3:4b"
+
 CATEGORY_GENRE_MAP: Dict[str, List[str]] = {
     "Live Music & Concerts": [
         "Rock, Pop & Alternative",
@@ -163,6 +165,36 @@ Guidelines:
 """
 
 
+def ensure_ollama_available(model_name: str = OLLAMA_MODEL) -> None:
+    """Verifies the Ollama daemon is reachable and the target model is pulled before enrichment."""
+    try:
+        listing = ollama.list()
+    except Exception as e:
+        raise RuntimeError(
+            f"Ollama daemon is unreachable ({e}). Start it with 'ollama serve' before running ETL."
+        ) from e
+
+    models = getattr(listing, "models", None) or (
+        listing.get("models", []) if isinstance(listing, dict) else []
+    )
+    available_names = [
+        (
+            getattr(m, "model", None)
+            or getattr(m, "name", None)
+            or (m.get("model") or m.get("name") if isinstance(m, dict) else "")
+        )
+        for m in models
+    ]
+    if not any(
+        name == model_name or name.startswith(f"{model_name}:")
+        for name in available_names
+    ):
+        raise RuntimeError(
+            f"Ollama model '{model_name}' is not installed (found: {available_names}). "
+            f"Run 'ollama pull {model_name}' first."
+        )
+
+
 def clean_scraped_description(raw_text: str) -> dict:
     fallback = {
         "clean_summary": raw_text[:1000] if raw_text else "",
@@ -181,7 +213,7 @@ def clean_scraped_description(raw_text: str) -> dict:
 
     try:
         response = ollama.chat(
-            model="gemma3:4b",
+            model=OLLAMA_MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_INSTRUCTION},
                 {
@@ -211,6 +243,8 @@ def process_event_batch(df: pd.DataFrame, max_workers: int = 2) -> pd.DataFrame:
     """Processes DataFrame with CPU-safe concurrency (max_workers=2) to avoid thread thrashing."""
     if df.empty:
         return df
+
+    ensure_ollama_available(OLLAMA_MODEL)
 
     raw_texts = [
         str(row.get("big_desc") or row.get("description") or "").strip()
@@ -411,6 +445,21 @@ class VividaIngestionPipeline:
             self.supabase_url, self.supabase_key)
         self._last_superseded_ids: List[str] = []
 
+    @staticmethod
+    def _is_valid_enrichment(row: Dict[str, Any]) -> bool:
+        """Rejects unenriched fallback rows (Other + Unknown/Unknown) so they get re-processed."""
+        cat = str(row.get("category") or "").strip()
+        desc = str(row.get("description") or "").strip()
+        if not cat or not desc:
+            return False
+        if (
+            cat == "Other"
+            and str(row.get("age_restriction") or "Unknown") == "Unknown"
+            and str(row.get("indoor_outdoor") or "Unknown") == "Unknown"
+        ):
+            return False
+        return True
+
     def sanitize_urls(self, url_str: Any) -> Optional[str]:
         if not url_str or pd.isna(url_str) or str(url_str).strip() in ["", "NULL", "none"]:
             return None
@@ -500,7 +549,7 @@ class VividaIngestionPipeline:
                 )
                 for row in resp.data or []:
                     row_id = str(row.get("id", "")).strip()
-                    if row_id and row.get("category") is not None and str(row.get("description") or "").strip():
+                    if row_id and self._is_valid_enrichment(row):
                         existing[row_id] = row
             except Exception as e:
                 logger.warning(
@@ -522,7 +571,7 @@ class VividaIngestionPipeline:
                             .execute()
                         )
                         for row in resp.data or []:
-                            if row.get("category") is not None and str(row.get("description") or "").strip():
+                            if self._is_valid_enrichment(row):
                                 key = (
                                     str(row.get("title", "")).strip().lower(),
                                     str(row.get("venue_name", "")

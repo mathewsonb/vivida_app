@@ -1,317 +1,331 @@
 """
-tacomaArtsLive.py
-Autonomous Production Scraper for Tacoma Arts Live (Tacoma, WA).
-Includes targeted Elementor text-editor container parsing for rich big_desc extraction.
+tacomaArtsMonth.py
+Autonomous REST API Scraper for Tacoma Arts Month (Tacoma, WA - Time.ly Calendar API).
+Queries dynamic rolling date windows, batch-fetches event detail payloads concurrently
+(workers=10), strips HTML descriptions, normalizes [start, end] date ranges,
+and hands off clean records to VividaIngestionPipeline.
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
+import html
 import logging
-import os
 import re
 import sys
-import time
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
 import pandas as pd
-from pyvirtualdisplay import Display
-import undetected_chromedriver as uc
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from vivida_etl import (
     VividaIngestionPipeline,
-    fetch_event_text,
+    parse_event_dates,
 )
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
-logger = logging.getLogger("scrape_tacoma_arts_live")
+logger = logging.getLogger("scrape_tacoma_arts_month")
 
-BASE_URL = "https://www.tacomaartslive.org"
-TARGET_URL = "https://www.tacomaartslive.org/upcoming-events/"
-DEFAULT_VENUE = "Tacoma Arts Live"
-DEFAULT_ADDRESS = "901 Broadway, Tacoma, WA 98402"
+CALENDAR_ID = 54705487
+BASE_API_URL = f"https://calendar.time.ly/api/calendars/{CALENDAR_ID}/events"
+TIMELY_API_KEY = "c6e5e0363b5925b28552de8805464c66f25ba0ce"
+DEFAULT_VENUE = "Tacoma Arts Month"
+DEFAULT_ADDRESS = "Tacoma, WA"
 
-MONTH_NAMES = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)"
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SANDBOX_PATH = (
-    os.path.join(os.path.dirname(BASE_DIR), "dev", "sandbox.html")
-    if os.path.basename(BASE_DIR) == "scrapers"
-    else os.path.join(BASE_DIR, "dev", "sandbox.html")
-)
-
-
-def create_stealth_driver() -> uc.Chrome:
-    """Instantiates an undetected Chrome driver configured for Xvfb display rendering."""
-    options = uc.ChromeOptions()
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--window-size=1920,1080")
-    options.add_argument("--disable-gpu")
-    
-    if os.path.exists("/usr/bin/google-chrome"):
-        options.binary_location = "/usr/bin/google-chrome"
-    elif os.path.exists("/usr/bin/chromium"):
-        options.binary_location = "/usr/bin/chromium"
-
-    return uc.Chrome(options=options, version_main=None)
+HEADERS = {
+    "accept": "application/json, text/plain, */*",
+    "accept-language": "en-US,en;q=0.9",
+    "referer": "https://calendar.time.ly/u1mdrp81/tile?timely_id=timely-iframe-embed-0-event-popup&popup=1",
+    "user-agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+    ),
+    "x-api-key": TIMELY_API_KEY,
+}
 
 
-def scroll_page_to_bottom(driver: uc.Chrome, max_scrolls: int = 10, pause_time: float = 2.5):
-    """Iteratively scrolls down the page to trigger dynamic AJAX loads for all upcoming events."""
-    logger.info("[SELENIUM SCROLL] Executing dynamic scroll loop...")
-    last_height = driver.execute_script("return document.body.scrollHeight")
-    
-    for i in range(max_scrolls):
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(pause_time)
-        
-        try:
-            load_more_btns = driver.find_elements("css selector", "a.mec-load-more-button, .mec-load-more-wrap a, a.mec-button")
-            for btn in load_more_btns:
-                if btn.is_displayed():
-                    driver.execute_script("arguments[0].click();", btn)
-                    time.sleep(pause_time)
-                    break
-        except Exception:
-            pass
-
-        new_height = driver.execute_script("return document.body.scrollHeight")
-        if new_height == last_height:
-            break
-        last_height = new_height
+def normalize_ws(text: Optional[str]) -> str:
+    if not text:
+        return ""
+    unescaped = html.unescape(str(text)).replace("\xa0", " ")
+    return re.sub(r"\s+", " ", unescaped).strip()
 
 
-def parse_event_dates(date_text: str, now: pd.Timestamp) -> Optional[List[str]]:
-    """Multi-pattern date parser supporting single dates, day ranges, and month rollovers."""
-    if not date_text or pd.isna(date_text):
-        return None
+def clean_html_to_text(raw_html: Optional[str]) -> str:
+    if not raw_html:
+        return ""
+    soup = BeautifulSoup(html.unescape(str(raw_html)), "html.parser")
+    return normalize_ws(soup.get_text(" ", strip=True))
 
-    clean_str = re.sub(r"\s+", " ", str(date_text).strip())
 
-    full_date_match = re.search(rf"\b{MONTH_NAMES}\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{4}}\b", clean_str, re.I)
-    if full_date_match:
-        dt = pd.to_datetime(full_date_match.group(0), errors="coerce")
-        if pd.notnull(dt):
-            return [dt.strftime("%Y-%m-%d")]
+def build_http_session(pool_size: int = 12) -> requests.Session:
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    retries = Retry(
+        total=2,
+        backoff_factor=0.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    adapter = HTTPAdapter(
+        max_retries=retries,
+        pool_connections=pool_size,
+        pool_maxsize=pool_size,
+    )
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
 
-    partial_date_match = re.search(rf"\b{MONTH_NAMES}\s+\d{{1,2}}(?:st|nd|rd|th)?\b", clean_str, re.I)
-    if partial_date_match:
-        full_str = f"{partial_date_match.group(0)}, {now.year}"
-        dt = pd.to_datetime(full_str, errors="coerce")
-        if pd.notnull(dt):
-            if dt.month < now.month:
-                dt = dt + pd.DateOffset(years=1)
-            return [dt.strftime("%Y-%m-%d")]
 
-    range_parts = re.split(r"\s*[-–—\bto\b]\s*", clean_str, flags=re.IGNORECASE)
-    try:
-        if len(range_parts) >= 2:
-            start_raw, end_raw = range_parts[0].strip(), range_parts[1].strip()
-            if re.match(r"^\d{1,2}$", end_raw):
-                month_match = re.search(rf"\b{MONTH_NAMES}\b", start_raw, re.I)
-                if month_match:
-                    end_raw = f"{month_match.group(0)} {end_raw}"
+def extract_timely_dates(item: Dict[str, Any], event_detail: Dict[str, Any]) -> List[str]:
+    """Extracts [start] or [start, end] ISO dates per Vivida's 3-rule date standard."""
+    start_raw = item.get(
+        "start_datetime") or event_detail.get("start_datetime")
+    end_raw = item.get("end_datetime") or event_detail.get("end_datetime")
 
-            start_dt = pd.to_datetime(start_raw, errors="coerce", format="mixed")
-            if pd.isnull(start_dt):
-                start_dt = pd.to_datetime(f"{start_raw}, {now.year}", errors="coerce", format="mixed")
+    start_dt = pd.to_datetime(
+        start_raw, errors="coerce", format="mixed") if start_raw else pd.NaT
+    end_dt = pd.to_datetime(end_raw, errors="coerce",
+                            format="mixed") if end_raw else pd.NaT
 
-            end_dt = pd.to_datetime(end_raw, errors="coerce", format="mixed")
-            if pd.isnull(end_dt):
-                end_dt = pd.to_datetime(f"{end_raw}, {now.year}", errors="coerce", format="mixed")
+    if pd.notnull(start_dt):
+        s_str = start_dt.strftime("%Y-%m-%d")
+        if pd.notnull(end_dt):
+            e_str = end_dt.strftime("%Y-%m-%d")
+            if e_str > s_str:
+                return [s_str, e_str]
+        return [s_str]
 
-            if pd.notnull(start_dt) and pd.notnull(end_dt):
-                if start_dt.month < now.month:
-                    start_dt = start_dt + pd.DateOffset(years=1)
-                    end_dt = end_dt + pd.DateOffset(years=1)
+    if start_raw:
+        return parse_event_dates(str(start_raw))
+    return []
 
-                if end_dt >= start_dt:
-                    diff_days = (end_dt.date() - start_dt.date()).days
-                    if diff_days <= 60:
-                        date_range = pd.date_range(start=start_dt.date(), end=end_dt.date(), freq="D")
-                        return [d.strftime("%Y-%m-%d") for d in date_range]
-                return [start_dt.strftime("%Y-%m-%d")]
-    except Exception as e:
-        logger.warning(f"Failed to parse date range text '{date_text}': {e}")
 
+def extract_venue_and_address(
+    item: Dict[str, Any], event_detail: Dict[str, Any]
+) -> tuple[str, str]:
+    """Resolves venue_name and full street address from Time.ly taxonomy or item venue object."""
+    venue_obj: Dict[str, Any] = {}
+    taxonomies = event_detail.get("taxonomies")
+    if isinstance(taxonomies, dict):
+        venues = taxonomies.get("taxonomy_venue")
+        if isinstance(venues, list) and venues and isinstance(venues[0], dict):
+            venue_obj = venues[0]
+
+    if not venue_obj and isinstance(item.get("venue"), dict):
+        venue_obj = item["venue"]
+
+    venue_name = normalize_ws(venue_obj.get(
+        "title") or venue_obj.get("name")) or DEFAULT_VENUE
+
+    raw_addr = normalize_ws(venue_obj.get("address"))
+    city = normalize_ws(venue_obj.get("city"))
+    state = normalize_ws(venue_obj.get("province")
+                         or venue_obj.get("state")) or "WA"
+    zip_code = normalize_ws(venue_obj.get(
+        "postal_code") or venue_obj.get("zip"))
+
+    if raw_addr:
+        street = raw_addr.split(",")[0].strip()
+        if city and zip_code:
+            address = f"{street}, {city}, {state} {zip_code}"
+        elif city:
+            address = f"{street}, {city}, {state}"
+        else:
+            address = raw_addr
+    elif city:
+        address = f"{city}, {state} {zip_code}".strip()
+    else:
+        address = DEFAULT_ADDRESS
+
+    return venue_name, address
+
+
+def extract_image_url(item: Dict[str, Any], event_detail: Dict[str, Any]) -> Optional[str]:
+    for source in (event_detail.get("images"), item.get("images")):
+        if isinstance(source, list) and source and isinstance(source[0], dict):
+            sizes = source[0].get("sizes")
+            if isinstance(sizes, dict):
+                for key in ("full", "large", "medium", "thumbnail"):
+                    url = sizes.get(key, {}).get("url") if isinstance(
+                        sizes.get(key), dict) else None
+                    if url:
+                        return str(url).strip()
+            if source[0].get("url"):
+                return str(source[0]["url"]).strip()
     return None
 
 
-def scraper() -> pd.DataFrame:
-    """Executes Stage 1 listing fetch and Stage 2 detail page traversals."""
-    logger.info("==================================================================")
-    logger.info("[START] Initializing PyVirtualDisplay server for Tacoma Arts Live scrape...")
-    logger.info("==================================================================")
-    
-    display = Display(visible=0, size=(1920, 1080), backend="xvfb")
-    display.start()
+def fetch_and_parse_event(
+    session: requests.Session, item: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Fetches full Time.ly event detail JSON and normalizes a single record."""
+    event_id = item.get("id")
+    event_detail: Dict[str, Any] = {}
 
-    driver = None
-    raw_records: List[Dict[str, Optional[str]]] = []
-    seen_urls: Set[str] = set()
+    if event_id:
+        try:
+            resp = session.get(f"{BASE_API_URL}/{event_id}", timeout=15)
+            if resp.status_code == 200:
+                payload = resp.json()
+                if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
+                    event_detail = payload["data"]
+        except Exception as err:
+            logger.debug(
+                f"Detail fetch fallback for event_id={event_id}: {err}")
 
-    try:
-        logger.info("[SELENIUM] Launching undetected Chrome driver session...")
-        driver = create_stealth_driver()
+    title = normalize_ws(event_detail.get("title") or item.get("title"))
+    if not title:
+        return None
 
-        logger.info(f"[SELENIUM NAV] Fetching main calendar grid: {TARGET_URL}")
-        driver.get(TARGET_URL)
-        time.sleep(8)
+    start_time = extract_timely_dates(item, event_detail)
+    if not start_time:
+        logger.warning(f"[SKIP] No valid dates parsed for '{title}'.")
+        return None
 
-        scroll_page_to_bottom(driver)
+    venue_name, address = extract_venue_and_address(item, event_detail)
 
-        main_html = driver.page_source
-        
-        os.makedirs(os.path.dirname(SANDBOX_PATH), exist_ok=True)
-        with open(SANDBOX_PATH, "w", encoding="utf-8") as f:
-            f.write(main_html)
-            f.flush()
+    big_desc = clean_html_to_text(
+        event_detail.get("description") or item.get("description")
+    )
+    short_desc = clean_html_to_text(
+        event_detail.get("description_short") or item.get("description_short")
+    )
+    description = short_desc or (big_desc[:280] if big_desc else title)
+    big_desc = big_desc or description
 
-        soup = BeautifulSoup(main_html, "html.parser")
-        event_cards = soup.select("article.mec-event-article")
-        if not event_cards:
-            event_cards = soup.select("div.col-md-4")
+    external_url = normalize_ws(
+        event_detail.get("url") or item.get("url")) or None
+    image_url = extract_image_url(item, event_detail)
 
-        if not event_cards:
-            logger.warning("[PARSER WARNING] Found 0 event cards matching selector grid.")
-            return pd.DataFrame()
+    ticket_link = None
+    ticket_url = normalize_ws(
+        event_detail.get("ticket_url")
+        or event_detail.get("cost_external_url")
+        or item.get("ticket_url")
+    )
+    if ticket_url:
+        ticket_link = ticket_url
+    elif str(event_detail.get("can_purchase_tickets", "")).lower() == "true":
+        ticket_link = external_url
 
-        total_cards = len(event_cards)
-        logger.info(f"[PARSER SUCCESS] Found {total_cards} candidate MEC event cards.")
+    return {
+        "venue_name": venue_name,
+        "address": address,
+        "title": title,
+        "start_time": start_time,
+        "description": description,
+        "big_desc": big_desc,
+        "external_url": external_url,
+        "image_url": image_url,
+        "ticket_link": ticket_link,
+    }
 
-        now = pd.Timestamp.now()
 
-        for idx, card in enumerate(event_cards, start=1):
-            try:
-                title_el = card.find("h4", class_=re.compile(r"mec-event-title|title", re.I)) or card.find(["h4", "h3"])
-                link_tag = title_el.find("a", href=True) if title_el else card.find("a", href=True)
-                
-                card_title = link_tag.get_text(strip=True) if link_tag else None
-                detail_url = link_tag.get("href") if link_tag else None
-                if detail_url and not detail_url.startswith("http"):
-                    detail_url = f"{BASE_URL}{detail_url if detail_url.startswith('/') else '/' + detail_url}"
+def scraper(days_ahead: int = 120) -> pd.DataFrame:
+    """Scrapes Tacoma Arts Month events via Time.ly JSON REST API across a rolling date window."""
+    tz = ZoneInfo("America/Los_Angeles")
+    now_local = datetime.now(tz)
+    start_day = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_day = start_day + timedelta(days=days_ahead)
 
-                if not card_title:
-                    continue
+    start_utc = int(start_day.timestamp())
+    end_utc = int(end_day.timestamp())
 
-                dedup_key = detail_url or card_title
-                if dedup_key in seen_urls:
-                    continue
-                seen_urls.add(dedup_key)
+    logger.info(
+        f"[START] Querying Time.ly API (calendar={CALENDAR_ID}) from "
+        f"{start_day.strftime('%Y-%m-%d')} to {end_day.strftime('%Y-%m-%d')}..."
+    )
 
-                logger.info(f"--- [EVENT {len(seen_urls)}/{total_cards}] Processing: {card_title} ---")
+    session = build_http_session(pool_size=12)
+    items: List[Dict[str, Any]] = []
+    seen_ids: set[Any] = set()
+    page = 1
 
-                date_span = card.find("span", class_=re.compile(r"mec-start-date-label|date", re.I))
-                raw_date_str = date_span.get_text(strip=True) if date_span else None
-                start_time_list = parse_event_dates(raw_date_str, now)
+    while True:
+        params = {
+            "timezone": "America/Los_Angeles",
+            "view": "tile",
+            "start_date_utc": str(start_utc),
+            "end_date_utc": str(end_utc),
+            "per_page": "200",
+            "page": str(page),
+        }
+        try:
+            resp = session.get(BASE_API_URL, params=params, timeout=20)
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as e:
+            logger.error(
+                f"[FETCH ERROR] Time.ly API listing failed on page {page}: {e}")
+            break
 
-                loc_p = card.find("p", class_=re.compile(r"mec-grid-event-location|location", re.I))
-                venue_name = DEFAULT_VENUE
-                address = DEFAULT_ADDRESS
-                if loc_p:
-                    loc_parts = [p.strip() for p in loc_p.get_text(strip=True).split(",") if p.strip()]
-                    if len(loc_parts) >= 1:
-                        venue_name = loc_parts[0]
-                    if len(loc_parts) >= 2:
-                        address = ", ".join(loc_parts[1:])
+        page_items = (
+            payload.get("data", {}).get("items", [])
+            if isinstance(payload, dict)
+            else (payload if isinstance(payload, list) else [])
+        )
+        if not page_items:
+            break
 
-                img_tag = card.find("img", src=True)
-                image_url = None
-                if img_tag and img_tag["src"]:
-                    src = img_tag["src"].strip()
-                    image_url = src if src.startswith("http") else f"{BASE_URL}{src if src.startswith('/') else '/' + src}"
+        new_count = 0
+        for it in page_items:
+            eid = it.get(
+                "id") or f"{it.get('title')}_{it.get('start_datetime')}"
+            if eid not in seen_ids:
+                seen_ids.add(eid)
+                items.append(it)
+                new_count += 1
 
-                big_desc = card_title
-                description = card_title
-                ticket_link = detail_url
+        logger.info(
+            f"[LISTING PAGE {page}] Retrieved {new_count} unique event items.")
+        if new_count == 0 or len(page_items) < 200:
+            break
+        page += 1
 
-                if detail_url:
-                    logger.info(f"  [DETAIL FETCH] Navigating to detail page: {detail_url}")
-                    driver.get(detail_url)
-                    time.sleep(3)
-                    
-                    det_soup = BeautifulSoup(driver.page_source, "html.parser")
-                    
-                    # Targeted Elementor text-editor container locator
-                    det_container = (
-                        det_soup.find("div", class_=re.compile(r"elementor-widget-text-editor", re.I)) or
-                        det_soup.find("div", class_="elementor-widget-container") or
-                        det_soup.find("div", class_=re.compile(r"entry-content|mec-single-event-description", re.I)) or
-                        det_soup.find("main") or
-                        det_soup
-                    )
-
-                    if not start_time_list:
-                        det_date = det_soup.find("span", class_=re.compile(r"mec-start-date-label|date", re.I))
-                        if det_date:
-                            start_time_list = parse_event_dates(det_date.get_text(strip=True), now)
-
-                    rich_text = fetch_event_text(det_container)
-                    if rich_text:
-                        big_desc = re.sub(r"\s+", " ", rich_text)
-
-                    p_tags = det_container.find_all("p")
-                    p_text_blocks = [re.sub(r"\s+", " ", p.get_text(strip=True)) for p in p_tags if p.get_text(strip=True)]
-                    if p_text_blocks:
-                        description = " ".join(p_text_blocks[:2])
-                    else:
-                        description = big_desc[:250] if big_desc else card_title
-
-                    t_anchor = det_soup.find("a", href=re.compile(r"ticket|buy|tessitura|ordertickets", re.IGNORECASE))
-                    if t_anchor and t_anchor.get("href"):
-                        ticket_link = t_anchor["href"].strip()
-
-                item_data = {
-                    "venue_name": venue_name,
-                    "address": address,
-                    "title": card_title,
-                    "start_time": start_time_list,
-                    "description": description,
-                    "big_desc": big_desc,
-                    "external_url": detail_url,
-                    "image_url": image_url,
-                    "ticket_link": ticket_link,
-                }
-
-                raw_records.append(item_data)
-                logger.info(f"  Title      : {item_data['title']}")
-                logger.info(f"  Start Time : {item_data['start_time']}")
-
-            except Exception as item_err:
-                logger.error(f"[ITEM ERROR] Failed parsing event #{idx}: {item_err}", exc_info=True)
-                continue
-
-    except Exception as e:
-        logger.error(f"[FATAL ERROR] Exception encountered during scraping loop: {e}", exc_info=True)
-    finally:
-        if driver:
-            logger.info("[CLEANUP] Closing Chrome driver instance...")
-            try:
-                driver.quit()
-            except Exception:
-                pass
-        logger.info("[CLEANUP] Stopping PyVirtualDisplay server...")
-        display.stop()
-
-    if not raw_records:
+    if not items:
+        logger.warning("[PARSER WARNING] No events returned from Time.ly API.")
         return pd.DataFrame()
 
-    return pd.DataFrame(raw_records)
+    logger.info(
+        f"Batch-fetching {len(items)} Time.ly event detail payloads concurrently (workers=10)..."
+    )
+
+    raw_records: List[Dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [
+            executor.submit(fetch_and_parse_event, session, item)
+            for item in items
+        ]
+        for fut in as_completed(futures):
+            rec = fut.result()
+            if rec:
+                raw_records.append(rec)
+
+    logger.info(
+        f"[PARSER SUCCESS] Normalized {len(raw_records)} valid Tacoma Arts Month records.")
+    return pd.DataFrame(raw_records) if raw_records else pd.DataFrame()
 
 
 if __name__ == "__main__":
-    logger.info("Executing Tacoma Arts Live scraper task...")
+    logger.info("Executing Tacoma Arts Month scraper task...")
     raw_df = scraper()
 
     if not raw_df.empty:
         pipeline = VividaIngestionPipeline(table_name="events")
         success = pipeline.run_standalone_pipeline(raw_df)
         if success:
-            logger.info("[PIPELINE SUCCESS] Tacoma Arts Live scraper completed successfully.")
+            logger.info(
+                "[PIPELINE SUCCESS] Tacoma Arts Month scraper completed successfully.")
         else:
-            logger.error("[PIPELINE ERROR] Tacoma Arts Live scraper pipeline execution reported errors.")
+            logger.error(
+                "[PIPELINE ERROR] Tacoma Arts Month scraper pipeline execution reported errors.")
     else:
         logger.warning("[EXIT] No events scraped. Pipeline handoff skipped.")
