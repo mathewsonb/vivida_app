@@ -1,9 +1,10 @@
 """
 tacomaComedyClub.py
 Autonomous JSON-LD Scraper for Tacoma Comedy Club (Tacoma, WA).
-Extracts schema.org metadata via pooled HTTP requests, groups multi-showtime
-headliner runs by (title, address) into discrete date arrays, and routes
-consolidated records to VividaIngestionPipeline.
+Extracts schema.org metadata via pooled HTTP requests, converts UTC showtime
+timestamps to America/Los_Angeles local dates via parse_event_dates, groups
+multi-showtime headliner runs by (title, address) into discrete date arrays,
+and routes consolidated records to VividaIngestionPipeline.
 """
 
 import html
@@ -89,6 +90,37 @@ def extract_jsonld_image(raw_image: Any) -> Optional[str]:
     return None
 
 
+def extract_offer_details(evt: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """Extracts checkout URL and price summary from schema.org offers block."""
+    offers = evt.get("offers")
+    if isinstance(offers, list):
+        offer_items = [o for o in offers if isinstance(o, dict)]
+    elif isinstance(offers, dict):
+        offer_items = [offers]
+    else:
+        offer_items = []
+
+    offer_url: Optional[str] = None
+    prices: List[str] = []
+
+    for offer in offer_items:
+        if not offer_url:
+            offer_url = resolve_url(offer.get("url"))
+        raw_price = offer.get("price")
+        if raw_price is not None and str(raw_price).strip() != "":
+            p_str = str(raw_price).strip()
+            if p_str in ("0", "0.0", "0.00"):
+                prices.append("Free ($0)")
+            else:
+                currency = str(offer.get("priceCurrency") or "$").strip()
+                prefix = "$" if currency == "USD" else currency
+                prices.append(
+                    f"{prefix}{p_str}" if not p_str.startswith("$") else p_str)
+
+    price_note = f"Tickets: {', '.join(dict.fromkeys(prices))}." if prices else None
+    return offer_url, price_note
+
+
 def resolve_branch_address(evt: Dict[str, Any], raw_description: str) -> str:
     """Determines Downtown (933 Market St) vs. 6th Ave (3829 6th Ave) branch from JSON-LD location or description."""
     loc = evt.get("location")
@@ -153,54 +185,72 @@ def build_http_session() -> requests.Session:
 def scraper() -> pd.DataFrame:
     """Scrapes Tacoma Comedy Club JSON-LD events and consolidates multi-showtime runs."""
     logger.info(
-        f"[START] Fetching Tacoma Comedy Club JSON-LD payload from {TARGET_URL}...")
+        f"[START] Fetching Tacoma Comedy Club JSON-LD payload from {TARGET_URL}..."
+    )
     session = build_http_session()
+    events_raw: List[Dict[str, Any]] = []
+    visited_urls = set()
+    next_url: Optional[str] = TARGET_URL
 
     try:
-        response = session.get(TARGET_URL, timeout=15)
-        response.raise_for_status()
-    except Exception as e:
+        while next_url and next_url not in visited_urls and len(visited_urls) < 5:
+            visited_urls.add(next_url)
+            try:
+                response = session.get(next_url, timeout=15)
+                response.raise_for_status()
+            except Exception as e:
+                logger.error(
+                    f"[FETCH ERROR] Failed to fetch Tacoma Comedy Club page ({next_url}): {e}"
+                )
+                break
+
+            soup = BeautifulSoup(response.text, "html.parser")
+            json_ld_scripts = soup.find_all(
+                "script", type="application/ld+json")
+
+            for script in json_ld_scripts:
+                raw_json = script.string or script.get_text()
+                if not raw_json or not raw_json.strip():
+                    continue
+                try:
+                    data = json.loads(raw_json)
+                    collect_jsonld_events(data, events_raw)
+                except json.JSONDecodeError:
+                    continue
+
+            next_link = soup.find(
+                "link", rel="next") or soup.find("a", rel="next")
+            next_url = resolve_url(next_link.get(
+                "href")) if next_link else None
+    finally:
+        session.close()
+
+    if not events_raw:
         logger.error(
-            f"[FETCH ERROR] Failed to fetch Tacoma Comedy Club page: {e}")
+            "[PARSER ERROR] No JSON-LD Event objects extracted from page.")
         return pd.DataFrame()
-
-    soup = BeautifulSoup(response.text, "html.parser")
-    json_ld_scripts = soup.find_all("script", type="application/ld+json")
-
-    if not json_ld_scripts:
-        logger.error("[PARSER ERROR] No JSON-LD script blocks found on page.")
-        return pd.DataFrame()
-
-    events_raw: List[Dict[str, Any]] = []
-    for script in json_ld_scripts:
-        raw_json = script.string or script.get_text()
-        if not raw_json or not raw_json.strip():
-            continue
-        try:
-            data = json.loads(raw_json)
-            collect_jsonld_events(data, events_raw)
-        except json.JSONDecodeError:
-            continue
 
     logger.info(
-        f"[PARSER SUCCESS] Retrieved {len(events_raw)} raw JSON-LD showtime entries.")
+        f"[PARSER SUCCESS] Retrieved {len(events_raw)} raw JSON-LD showtime entries."
+    )
 
-    # Group multi-showtime entries by (normalized_title_lower, address) into discrete date arrays
+    # Group multi-showtime entries by (normalized_title_lower, address) into discrete local date arrays
     grouped: Dict[Tuple[str, str], Dict[str, Any]] = {}
     skipped_no_date = 0
+    skipped_cancelled = 0
 
     for evt in events_raw:
+        status = str(evt.get("eventStatus") or "")
+        if "EventCancelled" in status:
+            skipped_cancelled += 1
+            continue
+
         clean_title = normalize_ws(evt.get("name"))
         if not clean_title:
             continue
 
-        iso_start = str(evt.get("startDate") or "").strip()
-        start_dt = pd.to_datetime(iso_start, errors="coerce")
-        if pd.notnull(start_dt):
-            parsed_dates = [start_dt.strftime("%Y-%m-%d")]
-        else:
-            parsed_dates = parse_event_dates(iso_start)
-
+        # parse_event_dates converts UTC/offset ISO-8601 startDate timestamps to America/Los_Angeles
+        parsed_dates = parse_event_dates(evt.get("startDate"))
         if not parsed_dates:
             skipped_no_date += 1
             continue
@@ -209,7 +259,21 @@ def scraper() -> pd.DataFrame:
         cleaned_text = clean_html_to_text(raw_desc)
         address = resolve_branch_address(evt, raw_desc)
         image_url = extract_jsonld_image(evt.get("image"))
-        ticket_url = resolve_url(evt.get("url"))
+
+        offer_url, price_note = extract_offer_details(evt)
+        event_url = resolve_url(evt.get("url"))
+        ticket_url = offer_url or event_url
+        external_url = event_url or offer_url
+
+        age_range = normalize_ws(evt.get("typicalAgeRange"))
+        llm_notes = [
+            f"Age Restriction: {age_range}." if age_range else None,
+            price_note,
+            "Venue default is typically 18+ or 21+ unless stated All Ages." if not age_range else None,
+        ]
+        enrichment_suffix = " ".join(n for n in llm_notes if n)
+        base_desc = cleaned_text or clean_title
+        rich_big_desc = f"{base_desc} {enrichment_suffix}".strip()
 
         group_key = (clean_title.lower(), address)
         if group_key not in grouped:
@@ -218,28 +282,32 @@ def scraper() -> pd.DataFrame:
                 "address": address,
                 "title": clean_title,
                 "dates_set": set(parsed_dates),
-                "description": cleaned_text or clean_title,
-                "big_desc": cleaned_text or clean_title,
-                "external_url": ticket_url,
+                "description": base_desc,
+                "big_desc": rich_big_desc,
+                "external_url": external_url,
                 "image_url": image_url,
                 "ticket_link": ticket_url,
             }
         else:
             entry = grouped[group_key]
             entry["dates_set"].update(parsed_dates)
-            # Keep richer description / valid image if the first showtime entry was sparse
-            if cleaned_text and len(cleaned_text) > len(entry["big_desc"] or ""):
+            if cleaned_text and len(cleaned_text) > len(entry["description"] or ""):
                 entry["description"] = cleaned_text
-                entry["big_desc"] = cleaned_text
+                entry["big_desc"] = rich_big_desc
             if not entry["image_url"] and image_url:
                 entry["image_url"] = image_url
             if not entry["ticket_link"] and ticket_url:
                 entry["ticket_link"] = ticket_url
-                entry["external_url"] = ticket_url
+            if not entry["external_url"] and external_url:
+                entry["external_url"] = external_url
 
+    if skipped_cancelled:
+        logger.info(
+            f"[SKIP] Excluded {skipped_cancelled} cancelled JSON-LD entries.")
     if skipped_no_date:
         logger.warning(
-            f"[SKIP] Dropped {skipped_no_date} JSON-LD entries with unparseable startDate.")
+            f"[SKIP] Dropped {skipped_no_date} JSON-LD entries with unparseable startDate."
+        )
 
     raw_records: List[Dict[str, Any]] = []
     for entry in grouped.values():
@@ -264,9 +332,11 @@ if __name__ == "__main__":
         success = pipeline.run_standalone_pipeline(raw_df)
         if success:
             logger.info(
-                "[PIPELINE SUCCESS] Tacoma Comedy Club scraper execution completed successfully.")
+                "[PIPELINE SUCCESS] Tacoma Comedy Club scraper execution completed successfully."
+            )
         else:
             logger.error(
-                "[PIPELINE ERROR] Tacoma Comedy Club scraper pipeline execution reported errors.")
+                "[PIPELINE ERROR] Tacoma Comedy Club scraper pipeline execution reported errors."
+            )
     else:
         logger.warning("[EXIT] No events scraped. Pipeline handoff skipped.")

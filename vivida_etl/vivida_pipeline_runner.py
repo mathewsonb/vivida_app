@@ -8,7 +8,10 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 import sys
+import time
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
@@ -32,11 +35,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("vivida_etl")
 
-
 # ==============================================================================
 # 1. PREPROCESSOR SCHEMA & OLLAMA EXTRACTION
 # ==============================================================================
-
 OLLAMA_MODEL = "gemma3:4b"
 
 CATEGORY_GENRE_MAP: Dict[str, List[str]] = {
@@ -166,13 +167,40 @@ Guidelines:
 
 
 def ensure_ollama_available(model_name: str = OLLAMA_MODEL) -> None:
-    """Verifies the Ollama daemon is reachable and the target model is pulled before enrichment."""
+    """Verifies Ollama daemon is reachable (auto-starting 'ollama serve' if offline) and model is pulled."""
     try:
         listing = ollama.list()
-    except Exception as e:
-        raise RuntimeError(
-            f"Ollama daemon is unreachable ({e}). Start it with 'ollama serve' before running ETL."
-        ) from e
+    except Exception as initial_err:
+        ollama_bin = shutil.which("ollama")
+        if not ollama_bin:
+            raise RuntimeError(
+                f"Ollama daemon is unreachable ({initial_err}) and 'ollama' binary was not found on PATH."
+            ) from initial_err
+
+        logger.info(
+            "Ollama daemon is offline; auto-starting 'ollama serve' in background..."
+        )
+        subprocess.Popen(
+            [ollama_bin, "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+        listing = None
+        for _ in range(15):
+            time.sleep(1.0)
+            try:
+                listing = ollama.list()
+                logger.info("Ollama daemon started and is now reachable.")
+                break
+            except Exception:
+                continue
+
+        if listing is None:
+            raise RuntimeError(
+                "Ollama daemon failed to become reachable within 15s after auto-starting 'ollama serve'."
+            ) from initial_err
 
     models = getattr(listing, "models", None) or (
         listing.get("models", []) if isinstance(listing, dict) else []
@@ -246,10 +274,13 @@ def process_event_batch(df: pd.DataFrame, max_workers: int = 2) -> pd.DataFrame:
 
     ensure_ollama_available(OLLAMA_MODEL)
 
-    raw_texts = [
-        str(row.get("big_desc") or row.get("description") or "").strip()
-        for _, row in df.iterrows()
-    ]
+    raw_texts = []
+    for _, row in df.iterrows():
+        title = str(row.get("title") or "").strip()
+        venue = str(row.get("venue_name") or "").strip()
+        body = str(row.get("big_desc") or row.get("description") or "").strip()
+        prefix = f"Event: {title} | Venue: {venue}\n" if title else ""
+        raw_texts.append(f"{prefix}{body}".strip())
 
     logger.info(
         f"Executing Ollama metadata extraction across {len(raw_texts)} new events (workers={max_workers})..."
@@ -270,6 +301,7 @@ def process_event_batch(df: pd.DataFrame, max_workers: int = 2) -> pd.DataFrame:
 # ==============================================================================
 # 2. ZERO-SHOT MOOD CLASSIFIER
 # ==============================================================================
+MOOD_MODEL_NAME = "facebook/bart-large-mnli"
 
 NOVELTY_SPECTRUM = {
     "traditional, conventional, classic, landmark": 0.05,
@@ -277,27 +309,23 @@ NOVELTY_SPECTRUM = {
     "niche, specialized, alternative, eclectic": 0.7,
     "exotic, experimental, avant-garde, unconventional": 0.95,
 }
-
 SOCIAL_SPECTRUM = {
     "solitary, introspective, secluded, independent": 0.05,
     "intimate, conversational, cozy, small-group": 0.3,
     "communal, interactive, social, outgoing": 0.7,
     "packed, festive, high-capacity, party-oriented": 0.95,
 }
-
 ENERGY_SPECTRUM = {
     "restorative, stationary, serene, sedentary": 0.05,
     "leisurely, relaxed, seated, low-key": 0.3,
     "lively, animated, bustling, dynamic": 0.7,
     "intense, high-octane, rigorous, exhilarating": 0.95,
 }
-
 ALL_CANDIDATES = (
     list(NOVELTY_SPECTRUM.keys())
     + list(SOCIAL_SPECTRUM.keys())
     + list(ENERGY_SPECTRUM.keys())
 )
-
 CATEGORY_PRIORS = {
     "Live Music & Concerts":         {"energy": 0.15,  "social": 0.15,  "novelty": 0.05},
     "Stage & Performing Arts":       {"energy": 0.00,  "social": 0.00,  "novelty": 0.10},
@@ -310,40 +338,36 @@ CATEGORY_PRIORS = {
     "Workshops & Learning":          {"energy": -0.10, "social": 0.05,  "novelty": 0.20},
     "Social & Games":                {"energy": 0.05,  "social": 0.25,  "novelty": 0.10},
 }
-
 _MOOD_CLASSIFIER = None
 
 
 def get_mood_classifier():
-    """Lazy-initializes zero-shot classifier (uses DistilBERT on CPU for 4x speed, BART-large on GPU)."""
+    """Lazy-initializes zero-shot BART-large MNLI classifier for maximum scoring fidelity."""
     global _MOOD_CLASSIFIER
     if _MOOD_CLASSIFIER is None:
         has_gpu = torch.cuda.is_available()
         device = 0 if has_gpu else -1
         torch_dtype = torch.float16 if has_gpu else torch.float32
-        model_name = (
-            "facebook/bart-large-mnli"
-            if has_gpu
-            else "typeform/distilbert-base-uncased-mnli"
-        )
         logger.info(
-            f"Loading zero-shot mood classifier ({model_name}) on device={device}..."
+            f"Loading zero-shot mood classifier ({MOOD_MODEL_NAME}) on device={device}..."
         )
         _MOOD_CLASSIFIER = pipeline(
             "zero-shot-classification",
-            model=model_name,
+            model=MOOD_MODEL_NAME,
             device=device,
             dtype=torch_dtype,
         )
     return _MOOD_CLASSIFIER
 
 
-def batch_mood_classifier(df: pd.DataFrame, batch_size: int = 32) -> pd.DataFrame:
-    """Computes normalized [0, 1] mood vector coordinates across the DataFrame in parallel batches."""
+def batch_mood_classifier(df: pd.DataFrame, batch_size: int = 8) -> pd.DataFrame:
+    """Computes globally calibrated [0, 1] mood vector coordinates across the DataFrame."""
     if df.empty:
         return df
 
     classifier = get_mood_classifier()
+    effective_batch_size = 32 if torch.cuda.is_available() else min(batch_size, 8)
+
     prompts = []
     for _, row in df.iterrows():
         desc = str(
@@ -361,14 +385,15 @@ def batch_mood_classifier(df: pd.DataFrame, batch_size: int = 32) -> pd.DataFram
             )
 
     logger.info(
-        f"Executing zero-shot mood batch inference across {len(prompts)} events..."
+        f"Executing zero-shot mood batch inference ({MOOD_MODEL_NAME}) across {len(prompts)} events..."
     )
-    results = classifier(
-        prompts,
-        candidate_labels=ALL_CANDIDATES,
-        multi_label=True,
-        batch_size=batch_size,
-    )
+    with torch.inference_mode():
+        results = classifier(
+            prompts,
+            candidate_labels=ALL_CANDIDATES,
+            multi_label=True,
+            batch_size=effective_batch_size,
+        )
 
     if isinstance(results, dict):
         results = [results]
@@ -380,11 +405,15 @@ def batch_mood_classifier(df: pd.DataFrame, batch_size: int = 32) -> pd.DataFram
     for idx, res in enumerate(results):
         score_map = dict(zip(res["labels"], res["scores"]))
 
-        def calc_coord(spectrum):
+        def calc_coord(spectrum: Dict[str, float]) -> float:
             total = sum(score_map.get(lbl, 0.0) for lbl in spectrum.keys())
             if total == 0:
                 return 0.5
-            return sum(score_map.get(lbl, 0.0) * val for lbl, val in spectrum.items()) / total
+            return (
+                sum(score_map.get(lbl, 0.0) *
+                    val for lbl, val in spectrum.items())
+                / total
+            )
 
         b_nov = calc_coord(NOVELTY_SPECTRUM)
         b_soc = calc_coord(SOCIAL_SPECTRUM)
@@ -404,19 +433,10 @@ def batch_mood_classifier(df: pd.DataFrame, batch_size: int = 32) -> pd.DataFram
             round(b_soc + priors["social"] + outdoor_boost, 4))
         novelty_coords.append(round(b_nov + priors["novelty"], 4))
 
-    df["energy"] = energy_coords
-    df["social"] = social_coords
-    df["novelty"] = novelty_coords
-
-    # Min-max scale each domain to [0, 1] safely (guarding against single-row / zero-variance batches)
-    for col in ["energy", "social", "novelty"]:
-        col_min = df[col].min()
-        col_max = df[col].max()
-        col_range = col_max - col_min
-        if col_range > 0:
-            df[col] = (df[col] - col_min) / col_range
-        else:
-            df[col] = df[col].clip(0.0, 1.0)
+    # Preserve absolute cross-venue calibration on [0, 1] instead of per-venue min-max stretching
+    df["energy"] = pd.Series(energy_coords, index=df.index).clip(0.0, 1.0)
+    df["social"] = pd.Series(social_coords, index=df.index).clip(0.0, 1.0)
+    df["novelty"] = pd.Series(novelty_coords, index=df.index).clip(0.0, 1.0)
 
     return df
 
@@ -424,6 +444,7 @@ def batch_mood_classifier(df: pd.DataFrame, batch_size: int = 32) -> pd.DataFram
 # ==============================================================================
 # 3. INGESTION PIPELINE ORCHESTRATOR
 # ==============================================================================
+
 
 class VividaIngestionPipeline:
     def __init__(self, table_name: str = "events"):
@@ -447,10 +468,16 @@ class VividaIngestionPipeline:
 
     @staticmethod
     def _is_valid_enrichment(row: Dict[str, Any]) -> bool:
-        """Rejects unenriched fallback rows (Other + Unknown/Unknown) so they get re-processed."""
+        """Rejects unenriched fallback rows or missing mood coordinates so they get re-processed."""
         cat = str(row.get("category") or "").strip()
         desc = str(row.get("description") or "").strip()
         if not cat or not desc:
+            return False
+        if (
+            row.get("energy") is None
+            or row.get("social") is None
+            or row.get("novelty") is None
+        ):
             return False
         if (
             cat == "Other"
@@ -480,7 +507,7 @@ class VividaIngestionPipeline:
             return 0.50
 
     def normalize_start_times(self, val: Any) -> List[str]:
-        """Normalizes list, JSON array string, Timestamp, or raw date string into flat YYYY-MM-DD strings."""
+        """Normalizes list, JSON array string, Timestamp, or raw date string into flat local YYYY-MM-DD strings."""
         if val is None or (not isinstance(val, list) and pd.isna(val)):
             return []
 
@@ -506,13 +533,23 @@ class VividaIngestionPipeline:
             if isinstance(item, dict):
                 item = item.get("start_time", "")
             if isinstance(item, pd.Timestamp):
-                clean_dates.append(item.strftime("%Y-%m-%d"))
+                dt = item.tz_convert(
+                    LOCAL_TZ) if item.tzinfo is not None else item
+                clean_dates.append(dt.strftime("%Y-%m-%d"))
             elif item is not None:
                 s = str(item).strip().strip('"').strip("'")
                 if not s or s.lower() in ("none", "nan", "nat"):
                     continue
-                if re.match(r"^\d{4}-\d{2}-\d{2}", s):
-                    clean_dates.append(s[:10])
+                if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+                    clean_dates.append(s)
+                elif re.match(r"^\d{4}-\d{2}-\d{2}[T\s]", s):
+                    dt = pd.to_datetime(s, errors="coerce")
+                    if pd.notnull(dt):
+                        if dt.tzinfo is not None:
+                            dt = dt.tz_convert(LOCAL_TZ)
+                        clean_dates.append(dt.strftime("%Y-%m-%d"))
+                    else:
+                        clean_dates.append(s[:10])
                 else:
                     clean_dates.extend(parse_event_dates(s))
         return clean_dates
@@ -729,7 +766,7 @@ class VividaIngestionPipeline:
             .reset_index(drop=True)
         )
 
-        # 5. Split cached vs. unenriched events so we only run Ollama + DistilBERT on new records
+        # 5. Split cached vs. unenriched events so we only run Ollama + BART-large on new records
         existing_map, superseded_ids = self.fetch_existing_enriched(
             grouped_df["id"].tolist(), grouped_df=grouped_df
         )
@@ -773,7 +810,7 @@ class VividaIngestionPipeline:
 
         if not new_df.empty:
             new_df = process_event_batch(new_df, max_workers=2)
-            new_df = batch_mood_classifier(new_df, batch_size=16)
+            new_df = batch_mood_classifier(new_df, batch_size=8)
 
         enriched_df = pd.concat([cached_df, new_df], ignore_index=True)
 

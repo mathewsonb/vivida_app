@@ -9,6 +9,7 @@ from .vivida_etl_helpers import (
     get_headless_chrome_options,
     expand_recurring_dates,
     parse_event_dates,
+    create_stealth_driver,
 )
 from .vivida_pipeline_runner import VividaIngestionPipeline
 

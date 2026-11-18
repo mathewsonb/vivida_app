@@ -1,200 +1,625 @@
 """
 cityOfUniversityPlace.py
-Autonomous Scraper for City of University Place (WA) Events.
-Refactored for Xvfb headless execution and isolated Supabase ingestion.
+Autonomous Scraper for City of University Place (WA) Events (CivicPlus).
+Uses HTTP-first calendar listing + concurrent detail fetching (workers=10)
+with lazy Xvfb/Chrome hydration fallback and centralized parse_event_dates normalization.
 """
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import glob
+import json
 import logging
 import re
+import shutil
 import sys
-from typing import Optional
+import time
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 import pandas as pd
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-# Import consolidated vivida_etl package
 from vivida_etl import (
     VividaIngestionPipeline,
     clean_html_source,
-    get_headless_chrome_options,
+    fetch_event_text,
+    parse_event_dates,
+    create_stealth_driver
 )
 
-# Configure logging for VM execution
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
+    format="%(asctime)s [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger("scrape_city_of_up")
 
 BASE_URL = "https://www.cityofup.com"
 TARGET_URL = "https://www.cityofup.com/132/Events"
-DEFAULT_VENUE = "University Place, WA"
+ALT_CALENDAR_URL = "https://www.cityofup.com/calendar.aspx"
+DEFAULT_VENUE = "City of University Place"
+DEFAULT_ADDRESS = "3609 Market Place W, University Place, WA 98466"
 
-def fetch_rendered_page(driver: webdriver.Chrome, url: str, wait_selector: Optional[str] = None, timeout: int = 10) -> Optional[BeautifulSoup]:
-    """Navigates active headless driver to target URL and returns pre-treated BeautifulSoup DOM."""
-    try:
-        driver.get(url)
-        if wait_selector:
-            try:
-                WebDriverWait(driver, timeout).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, wait_selector))
-                )
-            except Exception:
-                pass
-        
-        cleaned_html = clean_html_source(driver.page_source)
-        return BeautifulSoup(cleaned_html, "html.parser")
-    except Exception as e:
-        logger.warning(f"Failed to fetch page '{url}': {e}")
+GENERIC_TITLES = {
+    "calendar",
+    "events",
+    "event",
+    "event details",
+    "city of university place",
+    "university place",
+    "view details",
+    "more details",
+    "learn more",
+    "read more",
+    "home",
+    "menu",
+    "search",
+}
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
+def normalize_ws(text: Optional[str]) -> str:
+    return re.sub(r"\s+", " ", (text or "").replace("\xa0", " ")).strip()
+
+
+def is_valid_event_title(text: Optional[str]) -> bool:
+    clean = normalize_ws(text)
+    if not clean or len(clean) < 3:
+        return False
+    if clean.lower() in GENERIC_TITLES:
+        return False
+    # Reject bare date strings used as anchor text
+    if re.fullmatch(r"(?:[A-Za-z]+\s+\d{1,2}(?:,\s*\d{4})?|\d{1,2}/\d{1,2}/\d{2,4})", clean):
+        return False
+    return True
+
+
+def resolve_url(raw_url: Optional[str]) -> Optional[str]:
+    if not raw_url:
+        return None
+    clean = str(raw_url).strip()
+    if (
+        not clean
+        or clean.startswith("#")
+        or clean.lower().startswith("javascript:")
+        or clean.lower().startswith("data:")
+    ):
+        return None
+    return urljoin(BASE_URL, clean)
+
+
+def build_http_session(pool_size: int = 12) -> requests.Session:
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    retries = Retry(
+        total=2,
+        backoff_factor=0.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    adapter = HTTPAdapter(
+        max_retries=retries,
+        pool_connections=pool_size,
+        pool_maxsize=pool_size,
+    )
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+def extract_listing_candidates(soup: BeautifulSoup) -> List[Dict[str, Any]]:
+    """Extracts CivicPlus calendar event links and optional listing dates safely without nav pollution."""
+    target_section = (
+        soup.find("div", class_="calendarInnerWrapper")
+        or soup.find("div", class_=re.compile(r"cpGrid|calendar", re.I))
+        or soup
+    )
+    for element in target_section(["script", "style"]):
+        element.decompose()
+
+    candidates: List[Dict[str, Any]] = []
+    seen_urls = set()
+
+    event_items = target_section.find_all(
+        ["li", "tr", "div"],
+        class_=re.compile(r"calendarItem|cpGridRow|eventItem", re.I),
+    )
+
+    # Secondary safe CivicPlus fallback: only links explicitly pointing to Calendar EID pages
+    if not event_items:
+        eid_anchors = target_section.find_all(
+            "a", href=re.compile(r"Calendar\.aspx\?.*EID=", re.I)
+        )
+        event_items = [a.find_parent(
+            ["li", "tr", "div"]) or a for a in eid_anchors]
+
+    for event in event_items:
+        anchors = (
+            event.find_all("a", href=re.compile(r"EID=|/calendar", re.I))
+            if event.name != "a"
+            else [event]
+        )
+        if not anchors and event.name != "a":
+            anchors = event.find_all("a", href=True)
+
+        chosen_anchor = None
+        title_text = ""
+        for a in anchors:
+            if not a.get("href"):
+                continue
+            cand_title = normalize_ws(a.get_text(" ", strip=True))
+            if is_valid_event_title(cand_title):
+                chosen_anchor = a
+                title_text = cand_title
+                break
+
+        # If all anchors had generic text (e.g., "View Details"), check heading tags inside the card
+        if not chosen_anchor and anchors:
+            chosen_anchor = anchors[0]
+            heading = event.find(["h2", "h3", "h4", "strong", "span"], class_=re.compile(
+                r"title|name|header", re.I)) or event.find(["h2", "h3"])
+            if heading:
+                cand_title = normalize_ws(heading.get_text(" ", strip=True))
+                if is_valid_event_title(cand_title):
+                    title_text = cand_title
+
+        if not chosen_anchor or not chosen_anchor.get("href"):
+            continue
+
+        ext_url = resolve_url(chosen_anchor["href"])
+        if not ext_url or ext_url in seen_urls:
+            continue
+        seen_urls.add(ext_url)
+
+        start_dates: List[str] = []
+        date_tag = event.find(
+            ["h4", "h3", "span", "td", "div"],
+            class_=re.compile(r"date|calendarDate|dateHeader", re.I),
+        ) or event.find("h4")
+        if date_tag:
+            start_dates = parse_event_dates(
+                normalize_ws(date_tag.get_text(" ", strip=True))
+            )
+
+        candidates.append(
+            {
+                "title": title_text,
+                "external_url": ext_url,
+                "start_time": start_dates,
+            }
+        )
+
+    return candidates
+
+
+def parse_detail_html(
+    html: str,
+    fallback_title: str,
+    fallback_dates: List[str],
+    detail_url: str,
+) -> Optional[Dict[str, Any]]:
+    """Parses CivicPlus event detail page HTML into a structured event record."""
+    det_soup = BeautifulSoup(clean_html_source(html), "html.parser")
+    if not det_soup:
         return None
 
+    # 1. JSON-LD check if embedded on CivicPlus detail page
+    jsonld_title: Optional[str] = None
+    jsonld_dates: List[str] = []
+    jsonld_desc: Optional[str] = None
+    jsonld_image: Optional[str] = None
+    jsonld_venue: Optional[str] = None
+    jsonld_addr: Optional[str] = None
+
+    for script in det_soup.find_all("script", type="application/ld+json"):
+        raw = script.string or script.get_text()
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except Exception:
+            continue
+        items = data if isinstance(data, list) else data.get("@graph", [data])
+        for obj in items:
+            if isinstance(obj, dict) and "Event" in str(obj.get("@type") or ""):
+                cand_jtitle = normalize_ws(str(obj.get("name") or ""))
+                if is_valid_event_title(cand_jtitle):
+                    jsonld_title = cand_jtitle
+                s_raw = str(obj.get("startDate") or "").strip()
+                e_raw = str(obj.get("endDate") or "").strip()
+                if s_raw:
+                    s_dates = parse_event_dates(s_raw)
+                    e_dates = parse_event_dates(e_raw) if e_raw else []
+                    if s_dates and e_dates and e_dates[-1] > s_dates[0]:
+                        jsonld_dates = sorted(set([s_dates[0], e_dates[-1]]))
+                    else:
+                        jsonld_dates = s_dates
+                jsonld_desc = normalize_ws(
+                    str(obj.get("description") or "")
+                ) or None
+                img = obj.get("image")
+                if isinstance(img, list) and img:
+                    img = img[0]
+                elif isinstance(img, dict):
+                    img = img.get("url")
+                jsonld_image = resolve_url(img)
+                loc = obj.get("location")
+                if isinstance(loc, dict):
+                    jsonld_venue = normalize_ws(
+                        str(loc.get("name") or "")
+                    ) or None
+                    addr_obj = loc.get("address")
+                    if isinstance(addr_obj, dict):
+                        parts = [
+                            normalize_ws(
+                                str(addr_obj.get("streetAddress") or "")),
+                            normalize_ws(
+                                str(addr_obj.get("addressLocality") or "")),
+                            f"{normalize_ws(str(addr_obj.get('addressRegion') or 'WA'))} {normalize_ws(str(addr_obj.get('postalCode') or ''))}".strip(
+                            ),
+                        ]
+                        clean_parts = [p for p in parts if p]
+                        if clean_parts:
+                            jsonld_addr = ", ".join(clean_parts)
+                break
+
+    # Resolve specific event title (CivicPlus <h1> is the module banner "Calendar", so check specific selectors first)
+    title = jsonld_title or ""
+
+    if not is_valid_event_title(title):
+        for el in det_soup.find_all(attrs={"itemprop": "name"}):
+            if el.find_parent(attrs={"itemprop": "location"}):
+                continue
+            cand = normalize_ws(el.get_text(" ", strip=True))
+            if is_valid_event_title(cand):
+                title = cand
+                break
+
+    if not is_valid_event_title(title):
+        detail_selectors = [
+            "h2.calendarTitle",
+            "h3.calendarTitle",
+            ".calendarTitle",
+            ".eventTitle",
+            "#divEventDetails h2",
+            "#divEventDetails h3",
+            ".cpContent h2",
+            ".cpContent h3",
+            "h2",
+            "h1",
+        ]
+        for sel in detail_selectors:
+            for el in det_soup.select(sel):
+                cand = normalize_ws(el.get_text(" ", strip=True))
+                if is_valid_event_title(cand):
+                    title = cand
+                    break
+            if is_valid_event_title(title):
+                break
+
+    if not is_valid_event_title(title) and det_soup.title:
+        page_title = normalize_ws(det_soup.title.get_text(" ", strip=True))
+        # Strip trailing "| City of University Place, WA" or "- Official Website"
+        head_part = re.split(r"\s*[|\-–—]\s*", page_title)[0].strip()
+        if is_valid_event_title(head_part):
+            title = head_part
+
+    if not is_valid_event_title(title):
+        title = fallback_title
+
+    # 2. Dates (JSON-LD -> microdata itemprop -> detail date classes -> listing date)
+    dates = jsonld_dates
+    if not dates:
+        sd_el = det_soup.find(attrs={"itemprop": "startDate"})
+        ed_el = det_soup.find(attrs={"itemprop": "endDate"})
+        if sd_el:
+            s_val = normalize_ws(sd_el.get("content")
+                                 or sd_el.get_text(" ", strip=True))
+            e_val = normalize_ws(ed_el.get("content") or ed_el.get_text(
+                " ", strip=True)) if ed_el else ""
+            s_dates = parse_event_dates(s_val)
+            e_dates = parse_event_dates(e_val) if e_val else []
+            if s_dates and e_dates and e_dates[-1] > s_dates[0]:
+                dates = sorted(set([s_dates[0], e_dates[-1]]))
+            else:
+                dates = s_dates
+
+    if not dates:
+        date_el = det_soup.find(
+            ["div", "span", "td"],
+            class_=re.compile(r"eventDate|calendarDate|date", re.I),
+        )
+        if date_el:
+            dates = parse_event_dates(
+                normalize_ws(date_el.get_text(" ", strip=True))
+            )
+
+    if not dates:
+        dates = fallback_dates
+
+    if not is_valid_event_title(title) or not dates:
+        return None
+
+    # 3. Venue & Address
+    venue_name = jsonld_venue or DEFAULT_VENUE
+    address = jsonld_addr or DEFAULT_ADDRESS
+
+    addr_soup = det_soup.find(attrs={"itemprop": "location"}) or det_soup.find(
+        "div", class_=re.compile(r"eventLocation|location|address", re.I)
+    )
+    if addr_soup:
+        v_tag = addr_soup.find(attrs={"itemprop": "name"})
+        if v_tag and normalize_ws(v_tag.get_text()):
+            venue_name = normalize_ws(v_tag.get_text())
+
+        street_el = addr_soup.find(attrs={"itemprop": "streetAddress"})
+        city_el = addr_soup.find(attrs={"itemprop": "addressLocality"})
+        zip_el = addr_soup.find(attrs={"itemprop": "postalCode"})
+        if street_el and normalize_ws(street_el.get_text()):
+            st = normalize_ws(street_el.get_text())
+            ct = normalize_ws(city_el.get_text()
+                              ) if city_el else "University Place"
+            zp = normalize_ws(zip_el.get_text()) if zip_el else ""
+            address = f"{st}, {ct}, WA {zp}".strip()
+        elif not jsonld_addr:
+            raw_loc = normalize_ws(addr_soup.get_text(", ", strip=True))
+            if raw_loc and len(raw_loc) > 5:
+                address = raw_loc
+
+    # 4. Description
+    desc_container = det_soup.find(attrs={"itemprop": "description"}) or det_soup.find(
+        "div", class_=re.compile(r"eventDescription|cpContent", re.I)
+    )
+    big_desc = jsonld_desc or ""
+    short_desc = ""
+    if desc_container:
+        rich_text = fetch_event_text(desc_container)
+        extracted = (
+            normalize_ws(rich_text)
+            if rich_text
+            else normalize_ws(desc_container.get_text(" ", strip=True))
+        )
+        if len(extracted) > len(big_desc):
+            big_desc = extracted
+        p_tags = desc_container.find_all("p")
+        for p in p_tags:
+            txt = normalize_ws(p.get_text(" ", strip=True))
+            if txt:
+                short_desc = txt
+                break
+
+    if not big_desc:
+        big_desc = title
+    if not short_desc:
+        short_desc = big_desc[:250]
+
+    # 5. Image (prefer og:image or content image over site header logo)
+    image_url = jsonld_image
+    if not image_url:
+        og_img = det_soup.find("meta", property="og:image")
+        if og_img and og_img.get("content"):
+            image_url = resolve_url(og_img["content"])
+    if not image_url and desc_container:
+        img_tag = desc_container.find("img", src=True)
+        if img_tag and img_tag.get("src"):
+            image_url = resolve_url(img_tag["src"])
+
+    return {
+        "venue_name": venue_name,
+        "address": address,
+        "title": title,
+        "start_time": dates,
+        "description": short_desc,
+        "big_desc": big_desc,
+        "external_url": detail_url,
+        "image_url": image_url,
+        "ticket_link": detail_url,
+    }
+
+
+def fetch_detail_via_http(
+    session: requests.Session, candidate: Dict[str, Any]
+) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]], bool]:
+    detail_url = candidate["external_url"]
+    try:
+        resp = session.get(detail_url, timeout=15)
+        resp.raise_for_status()
+        if len(resp.text) < 500:
+            return candidate, None, False
+        rec = parse_detail_html(
+            resp.text,
+            candidate["title"],
+            candidate.get("start_time") or [],
+            detail_url,
+        )
+        return candidate, rec, True
+    except Exception:
+        return candidate, None, False
+
+
 def scraper() -> pd.DataFrame:
-    """Scrapes City of UP events using single headless Chrome instance and returns raw DataFrame."""
-    logger.info(f"Starting City of University Place scrape from {TARGET_URL}...")
-    
-    # Outer scope initialization to prevent UnboundLocalError on driver failure
-    events_data = []
+    """Scrapes City of University Place events via HTTP-first listing + concurrent detail fetching."""
+    logger.info(f"[START] Scraping City of University Place: {TARGET_URL}")
+    session = build_http_session(pool_size=12)
+
+    display = None
     driver = None
+    candidates: List[Dict[str, Any]] = []
+
+    def ensure_browser():
+        nonlocal display, driver
+        if driver is None:
+            from pyvirtualdisplay import Display
+
+            display = Display(visible=0, size=(1920, 1080), backend="xvfb")
+            display.start()
+            driver = create_stealth_driver()
+        return driver
 
     try:
-        chrome_opts = get_headless_chrome_options()
-        driver = webdriver.Chrome(options=chrome_opts)
-
-        # 1. Fetch main calendar page
-        soup = fetch_rendered_page(driver, TARGET_URL, wait_selector="div.calendarInnerWrapper, .cpGrid, table.calendarTable")
-        if not soup:
-            logger.error("Could not load main events page.")
-            return pd.DataFrame()
-
-        target_section = soup.find("div", class_="calendarInnerWrapper") or soup.find("div", class_=re.compile(r"cpGrid")) or soup
-        if not target_section:
-            logger.warning("Could not locate calendar container on page.")
-            return pd.DataFrame()
-
-        # Clean script/style nodes
-        for element in target_section(["script", "style"]):
-            element.decompose()
-
-        event_items = target_section.find_all(["li", "tr", "div"], class_=re.compile(r"calendarItem|cpGridRow|eventItem"))
-        if not event_items:
-            # Fallback to generic li search if specific CivicPlus grid classes aren't matched
-            event_items = target_section.find_all("li")
-
-        logger.info(f"Found {len(event_items)} candidate event items in calendar view.")
-
-        now = pd.Timestamp.now()
-
-        # 2. Iterate event list and step into detail pages via same driver
-        for event in event_items:
-            item_data = {
-                "venue_name": DEFAULT_VENUE,
-                "address": None,
-                "title": None,
-                "start_time": None,
-                "description": None,
-                "big_desc": None,
-                "external_url": None,
-                "image_url": None,
-                "ticket_link": None
-            }
-
-            # Extract Title & Relative Link
-            anchor = event.find("a", href=True)
-            if anchor:
-                title_text = anchor.get_text(strip=True)
-                if not title_text or len(title_text) < 3:
-                    continue
-                item_data["title"] = title_text
-                href = anchor["href"].strip()
-                item_data["external_url"] = urljoin(BASE_URL, href)
-            else:
-                continue
-
-            # Extract Raw Date Header
-            date_tag = event.find(["h4", "h3", "span", "td"], class_=re.compile(r"date|calendarDate|dateHeader", re.I)) or event.find("h4")
-            if date_tag:
-                raw_date_str = date_tag.get_text(strip=True)
-                try:
-                    # Strip day names (e.g., "Tuesday, ")
-                    clean_date_str = re.sub(
-                        r"^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Mon|Tue|Wed|Thu|Fri|Sat|Sun)[s\,]?\s*",
-                        "",
-                        raw_date_str,
-                        flags=re.IGNORECASE
-                    ).strip()
-
-                    full_date_str = f"{clean_date_str}, {now.year}" if str(now.year) not in clean_date_str else clean_date_str
-                    start_dt = pd.to_datetime(full_date_str, errors="coerce", format="mixed")
-                    
-                    if pd.notnull(start_dt):
-                        if start_dt.month < now.month and str(now.year) not in clean_date_str:
-                            start_dt = start_dt + pd.DateOffset(years=1)
-                        item_data["start_time"] = [start_dt.strftime("%Y-%m-%d")]
-                except Exception as e:
-                    logger.warning(f"Failed to parse date string '{raw_date_str}': {e}")
-
-            # 3. Step into Detail Page if URL exists
-            if item_data["external_url"]:
-                det_soup = fetch_rendered_page(
-                    driver, 
-                    item_data["external_url"], 
-                    wait_selector="div.eventDetails, div[itemprop='description'], .cpContent"
+        # 1. HTTP-first calendar fetch
+        for list_url in (TARGET_URL, ALT_CALENDAR_URL):
+            try:
+                resp = session.get(list_url, timeout=15)
+                resp.raise_for_status()
+                soup_http = BeautifulSoup(
+                    clean_html_source(resp.text), "html.parser"
                 )
-                
-                if det_soup:
-                    # Extract Venue & Address (itemprop="location")
-                    addr_soup = det_soup.find("div", itemprop="location") or det_soup.find("div", class_=re.compile(r"location|address", re.I))
-                    if addr_soup:
-                        venue_name_tag = addr_soup.find("div", itemprop="name") or addr_soup.find("span", itemprop="name")
-                        if venue_name_tag:
-                            item_data["venue_name"] = venue_name_tag.get_text(strip=True)
+                found = extract_listing_candidates(soup_http)
+                if found:
+                    candidates = found
+                    logger.info(
+                        f"[HTTP FAST-PATH] Extracted {len(candidates)} candidate events from {list_url}."
+                    )
+                    break
+            except Exception as http_err:
+                logger.warning(
+                    f"[HTTP LISTING] Failed {list_url} ({http_err})."
+                )
 
-                        try:
-                            street = addr_soup.find("span", itemprop="streetAddress").get_text(strip=True)
-                            city = addr_soup.find("span", itemprop="addressLocality").get_text(strip=True)
-                            zip_code = addr_soup.find("span", itemprop="postalCode").get_text(strip=True)
-                            item_data["address"] = f"{street}, {city}, WA {zip_code}"
-                        except Exception:
-                            item_data["address"] = addr_soup.get_text(separator=", ", strip=True)
+        # 2. Xvfb + Chrome fallback if HTTP returned 0 candidates
+        if not candidates:
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support import expected_conditions as EC
+            from selenium.webdriver.support.ui import WebDriverWait
 
-                    # Extract Description
-                    desc_container = det_soup.find("div", itemprop="description") or det_soup.find("div", class_=re.compile(r"eventDescription|cpContent"))
-                    if desc_container:
-                        raw_big_desc = desc_container.get_text(separator=" ", strip=True)
-                        item_data["big_desc"] = re.sub(r"\s+", " ", raw_big_desc)
+            logger.info(
+                "[HTTP LISTING] 0 static candidates; launching Xvfb + Chrome fallback..."
+            )
+            drv = ensure_browser()
+            for list_url in (TARGET_URL, ALT_CALENDAR_URL):
+                drv.get(list_url)
+                try:
+                    WebDriverWait(drv, 10).until(
+                        EC.presence_of_element_located(
+                            (
+                                By.CSS_SELECTOR,
+                                "div.calendarInnerWrapper, .cpGrid, a[href*='EID=']",
+                            )
+                        )
+                    )
+                except Exception:
+                    pass
+                time.sleep(2)
+                soup_browser = BeautifulSoup(
+                    clean_html_source(drv.page_source), "html.parser"
+                )
+                found = extract_listing_candidates(soup_browser)
+                if found:
+                    candidates = found
+                    logger.info(
+                        f"[CHROME LISTING] Extracted {len(candidates)} candidate events from {list_url}."
+                    )
+                    break
 
-                        p_tags = desc_container.find_all("p")
-                        if p_tags:
-                            item_data["description"] = p_tags[0].get_text(separator=" ", strip=True)
-                        else:
-                            item_data["description"] = item_data["big_desc"][:250] if item_data["big_desc"] else None
+            ua = drv.execute_script("return navigator.userAgent;")
+            if ua:
+                session.headers.update({"User-Agent": ua})
+            for cookie in drv.get_cookies():
+                session.cookies.set(
+                    cookie["name"],
+                    cookie["value"],
+                    domain=cookie.get("domain"),
+                    path=cookie.get("path", "/"),
+                )
 
-                    # Extract Detail Image
-                    img_tag = det_soup.find("img", src=True)
-                    if img_tag and img_tag["src"]:
-                        src = img_tag["src"].strip()
-                        item_data["image_url"] = urljoin(BASE_URL, src)
+        if not candidates:
+            logger.warning(
+                "[PARSER WARNING] Found 0 City of University Place calendar events."
+            )
+            return pd.DataFrame()
 
-            events_data.append(item_data)
+        # 3. Concurrent HTTP detail page traversal
+        logger.info(
+            f"Batch-fetching {len(candidates)} City of UP detail pages via HTTP (workers=10)..."
+        )
+        parsed_records: List[Dict[str, Any]] = []
+        fallback_candidates: List[Dict[str, Any]] = []
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [
+                executor.submit(fetch_detail_via_http, session, cand)
+                for cand in candidates
+            ]
+            for fut in as_completed(futures):
+                cand, rec, ok = fut.result()
+                if ok:
+                    if rec:
+                        parsed_records.append(rec)
+                else:
+                    fallback_candidates.append(cand)
+
+        if fallback_candidates:
+            drv = ensure_browser()
+            for cand in fallback_candidates:
+                try:
+                    drv.get(cand["external_url"])
+                    time.sleep(1.5)
+                    rec = parse_detail_html(
+                        drv.page_source,
+                        cand["title"],
+                        cand.get("start_time") or [],
+                        cand["external_url"],
+                    )
+                    if rec:
+                        parsed_records.append(rec)
+                except Exception as fb_err:
+                    logger.warning(
+                        f"[FALLBACK WARN] Failed {cand['external_url']}: {fb_err}"
+                    )
+
+        # 4. Consolidate recurring dates by normalized URL / title
+        grouped: Dict[str, Dict[str, Any]] = {}
+        for rec in parsed_records:
+            base_url = re.sub(
+                r"&?OccurrenceDate=[^&]+", "", rec["external_url"], flags=re.I
+            )
+            key = f"{base_url.lower()}::{rec['title'].lower()}"
+            if key in grouped:
+                grouped[key]["dates_set"].update(rec["start_time"])
+                continue
+            entry = dict(rec)
+            entry["dates_set"] = set(rec["start_time"])
+            grouped[key] = entry
+
+        final_rows: List[Dict[str, Any]] = []
+        for entry in grouped.values():
+            entry["start_time"] = sorted(entry.pop("dates_set"))
+            final_rows.append(entry)
+
+        return pd.DataFrame(final_rows) if final_rows else pd.DataFrame()
 
     except Exception as e:
-        logger.error(f"Error during headless execution loop: {e}")
+        logger.error(
+            f"[FATAL ERROR] Exception encountered during scraping loop: {e}", exc_info=True
+        )
+        return pd.DataFrame()
     finally:
+        session.close()
         if driver:
+            logger.info("[CLEANUP] Closing Chrome driver instance...")
             try:
                 driver.quit()
             except Exception:
                 pass
+        if display:
+            logger.info("[CLEANUP] Stopping PyVirtualDisplay server...")
+            try:
+                display.stop()
+            except Exception:
+                pass
 
-    if not events_data:
-        return pd.DataFrame()
-
-    return pd.DataFrame(events_data)
 
 if __name__ == "__main__":
     logger.info("Executing City of University Place scraper task...")
@@ -204,8 +629,12 @@ if __name__ == "__main__":
         pipeline = VividaIngestionPipeline(table_name="events")
         success = pipeline.run_standalone_pipeline(raw_df)
         if success:
-            logger.info("City of UP scraper execution completed successfully.")
+            logger.info(
+                "[PIPELINE SUCCESS] City of UP scraper execution completed successfully."
+            )
         else:
-            logger.error("City of UP scraper pipeline execution reported errors.")
+            logger.error(
+                "[PIPELINE ERROR] City of UP scraper pipeline execution reported errors."
+            )
     else:
-        logger.warning("No events scraped. Exiting task.")
+        logger.warning("[EXIT] No events scraped. Exiting task.")

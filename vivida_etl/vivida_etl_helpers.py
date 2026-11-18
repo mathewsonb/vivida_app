@@ -4,10 +4,15 @@ Consolidated ETL pipeline helpers aligned with Supabase schema & headless execut
 """
 from datetime import datetime
 from functools import lru_cache
+import glob
 import hashlib
 import json
+import os
 import re
+import shutil
+import subprocess
 from typing import Any, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
 from dateutil.relativedelta import relativedelta
@@ -15,7 +20,9 @@ import pandas as pd
 import requests
 from selenium.webdriver.chrome.options import Options
 
-# --- 1. HEADLESS CHROME CONFIGURATION ---
+LOCAL_TZ = ZoneInfo("America/Los_Angeles")
+
+# --- 1. HEADLESS & STEALTH CHROME CONFIGURATION ---
 
 
 def get_headless_chrome_options() -> Options:
@@ -28,6 +35,65 @@ def get_headless_chrome_options() -> Options:
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--disable-blink-features=AutomationControlled")
     return options
+
+
+def _detect_chrome_binary_and_major() -> Tuple[Optional[str], Optional[int]]:
+    """Finds the installed Chrome/Chromium binary and parses its major version number."""
+    cached_chrome = sorted(
+        glob.glob("/home/vscode/.cache/selenium/chrome/linux64/*/chrome")
+    )
+    chrome_bin = (
+        shutil.which("google-chrome")
+        or shutil.which("google-chrome-stable")
+        or shutil.which("chromium")
+        or shutil.which("chromium-browser")
+        or (cached_chrome[-1] if cached_chrome else None)
+    )
+    if not chrome_bin:
+        return None, None
+
+    try:
+        out = subprocess.check_output(
+            [chrome_bin, "--version"], stderr=subprocess.STDOUT, timeout=5
+        ).decode("utf-8", errors="ignore")
+        m = re.search(r"\b(\d{2,3})\.\d+\.\d+\.\d+\b", out)
+        if m:
+            return chrome_bin, int(m.group(1))
+    except Exception:
+        pass
+
+    return chrome_bin, None
+
+
+def create_stealth_driver(headless: bool = False):
+    """
+    Instantiates an undetected_chromedriver instance dynamically pinned to the
+    installed Chrome binary's major version, with automatic stale-driver cache recovery.
+    """
+    import undetected_chromedriver as uc
+    from selenium.common.exceptions import SessionNotCreatedException
+
+    chrome_bin, major_version = _detect_chrome_binary_and_major()
+
+    def _build():
+        options = uc.ChromeOptions()
+        if headless:
+            options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--window-size=1920,1080")
+        options.add_argument("--disable-gpu")
+        if chrome_bin:
+            options.binary_location = chrome_bin
+        return uc.Chrome(options=options, version_main=major_version)
+
+    try:
+        return _build()
+    except SessionNotCreatedException:
+        cache_dir = os.path.expanduser(
+            "~/.local/share/undetected_chromedriver")
+        shutil.rmtree(cache_dir, ignore_errors=True)
+        return _build()
 
 
 # --- 2. HTML & SCRAPER HELPERS ---
@@ -191,7 +257,7 @@ def parse_event_dates(
     default_year: Optional[int] = None,
 ) -> List[str]:
     """
-    Universal date parser enforcing Vivida's 3 scheduling rules (outputs flat YYYY-MM-DD strings):
+    Universal date parser enforcing Vivida's 3 scheduling rules (outputs flat local YYYY-MM-DD strings):
       1. Dash/through/to ranges ('Dec 4 - 6, 2026', 'Nov 28 through Dec 2, 2026', '12/04/2026 - 12/06/2026'):
          Continuous run -> returns [start_date, end_date] endpoints ONLY (no interior expansion).
       2. Comma/ampersand-separated dates ('Dec 4, Dec 5, Dec 6, 2026' or 'Dec 4, 5 & 6, 2026'):
@@ -220,8 +286,20 @@ def parse_event_dates(
         return []
 
     # Fast-path clean ISO date strings
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text) and not frequency:
-        return [text]
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return expand_recurring_dates(text, frequency=frequency, max_iterations=max_iterations)
+
+    # Fast-path ISO-8601 datetime strings (converts UTC / offset timestamps to America/Los_Angeles)
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?", text):
+        dt_iso = pd.to_datetime(text, errors="coerce")
+        if pd.notnull(dt_iso):
+            if dt_iso.tzinfo is not None:
+                dt_iso = dt_iso.tz_convert(LOCAL_TZ)
+            return expand_recurring_dates(
+                dt_iso.strftime("%Y-%m-%d"),
+                frequency=frequency,
+                max_iterations=max_iterations,
+            )
 
     # Strip leading weekday names ("Fri, Dec 4, 2026" -> "Dec 4, 2026")
     text = re.sub(
@@ -343,6 +421,8 @@ def parse_event_dates(
                 1), m_single.group(2), default_year)
 
     if dt_single is not None and pd.notnull(dt_single):
+        if dt_single.tzinfo is not None:
+            dt_single = dt_single.tz_convert(LOCAL_TZ)
         return expand_recurring_dates(
             dt_single.strftime("%Y-%m-%d"),
             frequency=frequency,

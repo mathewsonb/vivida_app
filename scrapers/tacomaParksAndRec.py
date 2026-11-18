@@ -25,6 +25,7 @@ from vivida_etl import (
     clean_html_source,
     fetch_event_text,
     parse_event_dates,
+    create_stealth_driver
 )
 
 logging.basicConfig(
@@ -84,32 +85,6 @@ def build_http_session(pool_size: int = 12) -> requests.Session:
     session.mount("https://", adapter)
     session.mount("http://", adapter)
     return session
-
-
-def create_stealth_driver():
-    """Lazy-instantiates undetected Chrome driver configured for Xvfb display rendering."""
-    import undetected_chromedriver as uc
-
-    options = uc.ChromeOptions()
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--window-size=1920,1080")
-    options.add_argument("--disable-gpu")
-
-    cached_chrome = sorted(
-        glob.glob("/home/vscode/.cache/selenium/chrome/linux64/*/chrome")
-    )
-    chrome_bin = (
-        shutil.which("google-chrome")
-        or shutil.which("google-chrome-stable")
-        or shutil.which("chromium")
-        or shutil.which("chromium-browser")
-        or (cached_chrome[-1] if cached_chrome else None)
-    )
-    if chrome_bin:
-        options.binary_location = chrome_bin
-
-    return uc.Chrome(options=options, version_main=None)
 
 
 def clean_and_parse_single_date(raw_str: str) -> Optional[pd.Timestamp]:
