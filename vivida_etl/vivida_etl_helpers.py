@@ -37,8 +37,8 @@ def get_headless_chrome_options() -> Options:
     return options
 
 
-def _detect_chrome_binary_and_major() -> Tuple[Optional[str], Optional[int]]:
-    """Finds the installed Chrome/Chromium binary and parses its major version number."""
+def _detect_chrome_binary_and_major() -> Tuple[Optional[str], Optional[int], Optional[str]]:
+    """Finds the installed Chrome binary, its major version, and any matching cached chromedriver."""
     cached_chrome = sorted(
         glob.glob("/home/vscode/.cache/selenium/chrome/linux64/*/chrome")
     )
@@ -50,30 +50,50 @@ def _detect_chrome_binary_and_major() -> Tuple[Optional[str], Optional[int]]:
         or (cached_chrome[-1] if cached_chrome else None)
     )
     if not chrome_bin:
-        return None, None
+        return None, None, None
 
+    major_version: Optional[int] = None
+
+    # 1. Try parsing from --version CLI output
     try:
         out = subprocess.check_output(
             [chrome_bin, "--version"], stderr=subprocess.STDOUT, timeout=5
         ).decode("utf-8", errors="ignore")
         m = re.search(r"\b(\d{2,3})\.\d+\.\d+\.\d+\b", out)
         if m:
-            return chrome_bin, int(m.group(1))
+            major_version = int(m.group(1))
     except Exception:
         pass
 
-    return chrome_bin, None
+    # 2. Fallback: extract version folder from Selenium cache path (e.g. .../157.0.8103.78/chrome)
+    if major_version is None:
+        m_path = re.search(r"/(\d{2,3})\.\d+\.\d+\.\d+/", chrome_bin)
+        if m_path:
+            major_version = int(m_path.group(1))
+
+    # 3. Look for a matching cached chromedriver executable in Selenium's cache
+    driver_bin: Optional[str] = None
+    if major_version is not None:
+        cached_drivers = sorted(
+            glob.glob(
+                f"/home/vscode/.cache/selenium/chromedriver/linux64/{major_version}.*/chromedriver")
+        )
+        if cached_drivers:
+            driver_bin = cached_drivers[-1]
+
+    return chrome_bin, major_version, driver_bin
 
 
 def create_stealth_driver(headless: bool = False):
     """
     Instantiates an undetected_chromedriver instance dynamically pinned to the
-    installed Chrome binary's major version, with automatic stale-driver cache recovery.
+    installed Chrome binary's major version, reusing cached drivers and clearing
+    stale patches automatically on SessionNotCreatedException.
     """
     import undetected_chromedriver as uc
     from selenium.common.exceptions import SessionNotCreatedException
 
-    chrome_bin, major_version = _detect_chrome_binary_and_major()
+    chrome_bin, major_version, cached_driver = _detect_chrome_binary_and_major()
 
     def _build():
         options = uc.ChromeOptions()
@@ -85,7 +105,23 @@ def create_stealth_driver(headless: bool = False):
         options.add_argument("--disable-gpu")
         if chrome_bin:
             options.binary_location = chrome_bin
-        return uc.Chrome(options=options, version_main=major_version)
+
+        kwargs = {"options": options}
+        if major_version is not None:
+            kwargs["version_main"] = major_version
+        if cached_driver and os.path.exists(cached_driver):
+            # Copy to a writable temp path so uc.Patcher can patch it cleanly without mutating Selenium's cache
+            uc_dir = os.path.expanduser(
+                "~/.local/share/undetected_chromedriver")
+            os.makedirs(uc_dir, exist_ok=True)
+            patched_target = os.path.join(
+                uc_dir, f"chromedriver_{major_version}")
+            if not os.path.exists(patched_target):
+                shutil.copy2(cached_driver, patched_target)
+                os.chmod(patched_target, 0o755)
+            kwargs["driver_executable_path"] = patched_target
+
+        return uc.Chrome(**kwargs)
 
     try:
         return _build()
@@ -94,7 +130,6 @@ def create_stealth_driver(headless: bool = False):
             "~/.local/share/undetected_chromedriver")
         shutil.rmtree(cache_dir, ignore_errors=True)
         return _build()
-
 
 # --- 2. HTML & SCRAPER HELPERS ---
 
@@ -130,7 +165,6 @@ def fetch_event_text(soup: BeautifulSoup) -> Optional[str]:
         print(f"[Parser Warning] Failed to clean event text: {e}")
         return None
 
-
 # --- 3. GEOCODING & CLEANING HELPERS ---
 
 
@@ -158,7 +192,6 @@ def get_census_coordinates(address_string: str) -> Tuple[Optional[float], Option
         pass
 
     return (None, None)
-
 
 # --- 4. IDENTIFIERS & DETERMINISTIC HASHING ---
 

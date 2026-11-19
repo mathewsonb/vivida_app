@@ -2,14 +2,14 @@
 tacomaParksAndRec.py
 Autonomous Production Scraper for Metro Parks Tacoma (The Events Calendar / Tribe Engine).
 Uses HTTP-first fetching (Tribe REST API + concurrent HTML detail fallback, workers=10)
-with lazy Xvfb/Chrome fallback, WAF cookie transfer, and centralized parse_event_dates range normalization.
+with lazy Xvfb/Chrome fallback, in-browser Tribe API execution after WAF clearance,
+and centralized parse_event_dates range normalization.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import glob
+import json
 import logging
 import re
-import shutil
 import sys
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -23,9 +23,9 @@ from urllib3.util.retry import Retry
 from vivida_etl import (
     VividaIngestionPipeline,
     clean_html_source,
+    create_stealth_driver,
     fetch_event_text,
     parse_event_dates,
-    create_stealth_driver
 )
 
 logging.basicConfig(
@@ -165,6 +165,80 @@ def strip_html_text(raw_html: Optional[str]) -> str:
     return normalize_ws(text)
 
 
+def normalize_tribe_events_payload(
+    events: List[Dict[str, Any]], seen_urls: Set[str]
+) -> List[Dict[str, Any]]:
+    """Converts Tribe REST API event JSON objects into Vivida standard records."""
+    records: List[Dict[str, Any]] = []
+    for ev in events:
+        title = strip_html_text(ev.get("title"))
+        if not title:
+            continue
+
+        detail_url = resolve_url(ev.get("url"))
+        dedup_key = detail_url or title.lower()
+        if dedup_key in seen_urls:
+            continue
+        seen_urls.add(dedup_key)
+
+        raw_start = ev.get("start_date") or ""
+        raw_end = ev.get("end_date") or ""
+        dt_start = pd.to_datetime(raw_start, errors="coerce")
+        dt_end = pd.to_datetime(raw_end, errors="coerce")
+
+        if pd.isna(dt_start):
+            start_times = parse_event_dates(raw_start)
+        else:
+            start_iso = dt_start.strftime("%Y-%m-%d")
+            if pd.notnull(dt_end) and dt_end.date() > dt_start.date():
+                start_times = parse_event_dates(
+                    f"{start_iso} - {dt_end.strftime('%Y-%m-%d')}")
+            else:
+                start_times = parse_event_dates(start_iso)
+
+        if not start_times:
+            continue
+
+        venue_obj = ev.get("venue") if isinstance(
+            ev.get("venue"), dict) else {}
+        venue_name = strip_html_text(venue_obj.get("venue")) or DEFAULT_VENUE
+
+        addr_parts = [
+            strip_html_text(venue_obj.get("address")),
+            strip_html_text(venue_obj.get("city")),
+            strip_html_text(venue_obj.get("state")
+                            or venue_obj.get("province")),
+            strip_html_text(venue_obj.get("zip")),
+        ]
+        full_addr = ", ".join([p for p in addr_parts if p])
+        address = full_addr if len(full_addr) > 5 else DEFAULT_ADDRESS
+
+        short_desc = strip_html_text(ev.get("excerpt"))
+        full_desc = strip_html_text(ev.get("description"))
+        cost_str = strip_html_text(ev.get("cost"))
+        if cost_str:
+            full_desc = normalize_ws(f"{full_desc} Cost: {cost_str}")
+
+        img_obj = ev.get("image") if isinstance(ev.get("image"), dict) else {}
+        image_url = resolve_url(img_obj.get("url"))
+        ticket_link = resolve_url(ev.get("website")) or detail_url
+
+        records.append(
+            {
+                "venue_name": venue_name,
+                "address": address,
+                "title": title,
+                "start_time": start_times,
+                "description": short_desc or full_desc or title,
+                "big_desc": full_desc or short_desc or title,
+                "external_url": detail_url,
+                "image_url": image_url,
+                "ticket_link": ticket_link,
+            }
+        )
+    return records
+
+
 def fetch_via_tribe_api(session: requests.Session, max_pages: int = 10) -> List[Dict[str, Any]]:
     """
     Fast-path: queries WordPress Tribe Events REST API directly to retrieve structured
@@ -192,76 +266,75 @@ def fetch_via_tribe_api(session: requests.Session, max_pages: int = 10) -> List[
         if not events:
             break
 
-        for ev in events:
-            title = strip_html_text(ev.get("title"))
-            if not title:
-                continue
+        records.extend(normalize_tribe_events_payload(events, seen_urls))
 
-            detail_url = resolve_url(ev.get("url"))
-            dedup_key = detail_url or title.lower()
-            if dedup_key in seen_urls:
-                continue
-            seen_urls.add(dedup_key)
+        total_pages = int(data.get("total_pages") or 1)
+        if page >= total_pages:
+            break
 
-            raw_start = ev.get("start_date") or ""
-            raw_end = ev.get("end_date") or ""
-            dt_start = pd.to_datetime(raw_start, errors="coerce")
-            dt_end = pd.to_datetime(raw_end, errors="coerce")
+    return records
 
-            if pd.isna(dt_start):
-                start_times = parse_event_dates(raw_start)
-            else:
-                start_iso = dt_start.strftime("%Y-%m-%d")
-                if pd.notnull(dt_end) and dt_end.date() > dt_start.date():
-                    start_times = parse_event_dates(
-                        f"{start_iso} - {dt_end.strftime('%Y-%m-%d')}"
-                    )
-                else:
-                    start_times = parse_event_dates(start_iso)
 
-            if not start_times:
-                continue
+def wait_for_waf_clearance(driver, timeout: int = 20) -> None:
+    """Polls until Cloudflare/WAF 'Just a moment' challenge resolves and page body renders."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        title = (driver.title or "").lower()
+        body_len = len(driver.page_source or "")
+        if (
+            "just a moment" not in title
+            and "attention required" not in title
+            and "checking your browser" not in title
+            and body_len > 4000
+        ):
+            return
+        time.sleep(1.5)
 
-            venue_obj = ev.get("venue") if isinstance(
-                ev.get("venue"), dict) else {}
-            venue_name = strip_html_text(
-                venue_obj.get("venue")) or DEFAULT_VENUE
 
-            addr_parts = [
-                strip_html_text(venue_obj.get("address")),
-                strip_html_text(venue_obj.get("city")),
-                strip_html_text(venue_obj.get("state")
-                                or venue_obj.get("province")),
-                strip_html_text(venue_obj.get("zip")),
-            ]
-            full_addr = ", ".join([p for p in addr_parts if p])
-            address = full_addr if len(full_addr) > 5 else DEFAULT_ADDRESS
+def fetch_tribe_api_in_browser(driver, max_pages: int = 10) -> List[Dict[str, Any]]:
+    """
+    Executes same-origin fetch() calls to the Tribe REST API directly inside the
+    WAF-cleared Chrome browser session, inheriting cf_clearance cookies & TLS fingerprint.
+    """
+    records: List[Dict[str, Any]] = []
+    seen_urls: Set[str] = set()
+    now_str = pd.Timestamp.now(
+        tz="America/Los_Angeles").strftime("%Y-%m-%d 00:00:00")
 
-            short_desc = strip_html_text(ev.get("excerpt"))
-            full_desc = strip_html_text(ev.get("description"))
-            cost_str = strip_html_text(ev.get("cost"))
-            if cost_str:
-                full_desc = normalize_ws(f"{full_desc} Cost: {cost_str}")
+    driver.set_script_timeout(20)
+    js_fetch = """
+    const url = arguments[0];
+    const done = arguments[1];
+    fetch(url, { credentials: 'include', headers: { 'Accept': 'application/json' } })
+      .then(async (r) => {
+        const text = await r.text();
+        done({ status: r.status, text: text });
+      })
+      .catch((err) => done({ status: 0, error: String(err) }));
+    """
 
-            img_obj = ev.get("image") if isinstance(
-                ev.get("image"), dict) else {}
-            image_url = resolve_url(img_obj.get("url"))
+    for page in range(1, max_pages + 1):
+        from urllib.parse import urlencode
 
-            ticket_link = resolve_url(ev.get("website")) or detail_url
-
-            records.append(
-                {
-                    "venue_name": venue_name,
-                    "address": address,
-                    "title": title,
-                    "start_time": start_times,
-                    "description": short_desc or full_desc or title,
-                    "big_desc": full_desc or short_desc or title,
-                    "external_url": detail_url,
-                    "image_url": image_url,
-                    "ticket_link": ticket_link,
-                }
+        qs = urlencode({"per_page": 50, "page": page, "start_date": now_str})
+        api_url = f"/wp-json/tribe/events/v1/events?{qs}"
+        res = driver.execute_async_script(js_fetch, api_url)
+        if not isinstance(res, dict) or res.get("status") != 200:
+            logger.info(
+                f"[IN-BROWSER TRIBE API] Returned status {res.get('status') if isinstance(res, dict) else 'ERR'} on page {page}."
             )
+            break
+
+        try:
+            data = json.loads(res.get("text") or "{}")
+        except Exception:
+            break
+
+        events = data.get("events", [])
+        if not events:
+            break
+
+        records.extend(normalize_tribe_events_payload(events, seen_urls))
 
         total_pages = int(data.get("total_pages") or 1)
         if page >= total_pages:
@@ -329,11 +402,11 @@ def fetch_detail_via_http(
 
 
 def scraper() -> pd.DataFrame:
-    """Scrapes Metro Parks Tacoma events via Tribe REST API first, falling back to HTML + Chrome."""
+    """Scrapes Metro Parks Tacoma events via Tribe REST API first, falling back to Chrome + in-browser API / HTML."""
     logger.info(f"[START] Scraping Metro Parks Tacoma: {TARGET_URL}")
     session = build_http_session(pool_size=12)
 
-    # 1. Fast-Path: WordPress Tribe Events REST API
+    # 1. Fast-Path: WordPress Tribe Events REST API via HTTP
     try:
         api_records = fetch_via_tribe_api(session)
         if api_records:
@@ -352,7 +425,7 @@ def scraper() -> pd.DataFrame:
     try:
         resp = session.get(TARGET_URL, timeout=15)
         resp.raise_for_status()
-        if "tribe-events" in resp.text:
+        if "tribe-events" in resp.text or "/event/" in resp.text:
             main_html = resp.text
             logger.info(
                 "[HTTP FAST-PATH] Loaded Metro Parks Tacoma HTML listing via HTTP.")
@@ -369,14 +442,26 @@ def scraper() -> pd.DataFrame:
         try:
             driver = create_stealth_driver()
             driver.get(TARGET_URL)
-            time.sleep(6)
+            wait_for_waf_clearance(driver, timeout=20)
+            time.sleep(2)
+
+            # Try same-origin Tribe REST API directly inside the WAF-cleared browser first!
+            browser_api_records = fetch_tribe_api_in_browser(driver)
+            if browser_api_records:
+                logger.info(
+                    f"[IN-BROWSER TRIBE API SUCCESS] Retrieved {len(browser_api_records)} structured events via Chrome session."
+                )
+                return pd.DataFrame(browser_api_records)
+
             driver.execute_script(
                 "window.scrollTo(0, document.body.scrollHeight / 2);")
             time.sleep(2)
             main_html = driver.page_source
+            logger.info(
+                f"[CHROME PAGE] Loaded title='{normalize_ws(driver.title)}', html_len={len(main_html)}"
+            )
 
             # Transfer solved WAF cookies + exact browser User-Agent to requests.Session
-            # so concurrent HTTP detail workers pass Cloudflare/WAF without a second browser
             ua = driver.execute_script("return navigator.userAgent;")
             if ua:
                 session.headers.update({"User-Agent": ua})
@@ -399,15 +484,18 @@ def scraper() -> pd.DataFrame:
     target_section = (
         soup.find("ul", class_=re.compile(r"tribe-events-calendar-list"))
         or soup.find("div", id="tribe-events-pg-template")
+        or soup.find("main")
         or soup
     )
     for element in target_section(["script", "style"]):
         element.decompose()
 
     event_items = target_section.find_all(
-        "div",
+        ["div", "article", "li"],
         class_=re.compile(
-            r"tribe-events-calendar-list__event-row|tribe-events-single"),
+            r"tribe-events-calendar-list__event-row|tribe-events-calendar-list__event\b|tribe-events-single|event-card|type-tribe_events",
+            re.I,
+        ),
     )
     if not event_items:
         event_items = target_section.find_all("article")
@@ -421,7 +509,7 @@ def scraper() -> pd.DataFrame:
     for idx, event in enumerate(event_items, start=1):
         try:
             h4_tag = event.find(["h4", "h3", "h2"], class_=re.compile(
-                r"title", re.I)) or event.find(["h4", "h3"])
+                r"title", re.I)) or event.find(["h4", "h3", "h2"])
             card_title = normalize_ws(h4_tag.get_text(
                 " ", strip=True)) if h4_tag else ""
             if not card_title:
@@ -436,12 +524,12 @@ def scraper() -> pd.DataFrame:
                 continue
             seen_urls.add(dedup_key)
 
-            venue_span = event.find("span", class_=re.compile(
+            venue_span = event.find(["span", "div"], class_=re.compile(
                 r"tribe-events-calendar-list__event-venue-title|venue"))
             venue_name = normalize_ws(venue_span.get_text(
                 " ", strip=True)) if venue_span else DEFAULT_VENUE
 
-            addr_span = event.find("span", class_=re.compile(
+            addr_span = event.find(["span", "div"], class_=re.compile(
                 r"tribe-events-calendar-list__event-venue-address|address"))
             address = normalize_ws(addr_span.get_text(
                 " ", strip=True)) if addr_span else DEFAULT_ADDRESS
@@ -487,10 +575,8 @@ def scraper() -> pd.DataFrame:
     fallback_queue: List[Dict[str, Any]] = []
 
     with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [
-            executor.submit(fetch_detail_via_http, session, item)
-            for item in staged_items
-        ]
+        futures = [executor.submit(
+            fetch_detail_via_http, session, item) for item in staged_items]
         for fut in as_completed(futures):
             updated_item, ok = fut.result()
             if ok:
@@ -511,7 +597,7 @@ def scraper() -> pd.DataFrame:
                 if detail_url:
                     try:
                         driver.get(detail_url)
-                        time.sleep(2.5)
+                        wait_for_waf_clearance(driver, timeout=12)
                         dates, big_desc, ticket_link = parse_detail_html(
                             driver.page_source,
                             item["start_time"],
