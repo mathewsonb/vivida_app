@@ -2,13 +2,17 @@ name: Vivida Autonomous ETL Pipeline
 
 on:
   schedule:
-    # Trigger execution every 6 hours (00:00, 06:00, 12:00, 18:00 UTC)
-    - cron: '0 */6 * * *'
+    # Runs daily at 11:00 UTC (3:00 AM PST / 4:00 AM PDT)
+    - cron: '0 11 * * *'
   workflow_dispatch: # Allows manual trigger from the GitHub Actions UI
+
+permissions:
+  contents: write
 
 jobs:
   run-etl-pipeline:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout Repository
@@ -23,16 +27,118 @@ jobs:
       - name: Install System Dependencies (Chrome & Xvfb)
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb google-chrome-stable libgconf-2-4 libnss3 libatk-bridge2.0-0 libgtk-3-0
+          sudo apt-get install -y wget gnupg xvfb xauth libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+          google-chrome --version
 
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Execute Master ETL Pipeline Suite
+      - name: Execute Master ETL Pipeline Suite & Build Running Summary
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_SERVICE_KEY: ${{ secrets.VITE_SUPABASE_SERVICE_KEY }}
+          # Add your Tacoma Pierce County key secret name below if stored in GitHub Secrets:
+          # TACOMA_PIERCE_API_KEY: ${{ secrets.TACOMA_PIERCE_API_KEY }}
+          PYTHONUNBUFFERED: "1"
         run: |
-          xvfb-run -a python vivida_etl/pipeline_runner.py
+          set +e
+          xvfb-run -a python vivida_etl/pipeline_runner.py 2>&1 | tee /tmp/etl_full_run.log
+
+          python - << 'EOF'
+          import datetime
+          import os
+          import re
+          from zoneinfo import ZoneInfo
+
+          tz = ZoneInfo("America/Los_Angeles")
+          now_str = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S %Z")
+
+          with open("/tmp/etl_full_run.log", "r", encoding="utf-8", errors="ignore") as f:
+              raw_log = f.read()
+
+          task_pattern = re.compile(r"---\s*\[\d+/\d+\]\s*Running Task:\s*(.+?)\s*\((.+?)\)\s*---")
+          matches = list(task_pattern.finditer(raw_log))
+
+          succeeded = []
+          attention_needed = []
+
+          for i, m in enumerate(matches):
+              task_name, module_name = m.group(1).strip(), m.group(2).strip()
+              start_idx = m.end()
+              end_idx = matches[i + 1].start() if i + 1 < len(matches) else len(raw_log)
+              block = raw_log[start_idx:end_idx]
+
+              has_fatal = bool(re.search(r"\[(?:FATAL ERROR|PIPELINE ERROR|CRITICAL)\]|Traceback \(most recent call last\)", block))
+              no_events = bool(re.search(r"No events returned|No events scraped|Found 0 .* event", block))
+
+              count_match = re.search(
+                  r"(?:Synchronized|Upserted|Retrieved|Extracted|Found|Ingested|Processed)[:\s]+(\d+)(?:/\d+)?\s*(?:structured\s+)?(?:events|rows|records|items)?",
+                  block,
+                  re.I,
+              )
+              count_str = f"{count_match.group(1)} records" if count_match else "completed"
+
+              if has_fatal:
+                  err_line = next(
+                      (ln.strip() for ln in block.splitlines() if "ERROR" in ln or "Exception:" in ln),
+                      "Execution error",
+                  )
+                  attention_needed.append(f"  [ERROR] {task_name} ({module_name}) -> {err_line[:140]}")
+              elif no_events:
+                  attention_needed.append(f"  [0 EVENTS] {task_name} ({module_name}) -> Returned 0 events (check selectors/API)")
+              else:
+                  succeeded.append(f"  [OK] {task_name} ({module_name}) -> {count_str}")
+
+          lines = [
+              "=" * 78,
+              f"VIVIDA DAILY ETL SUMMARY | {now_str}",
+              f"Tasks Run: {len(matches)} | Healthy: {len(succeeded)} | Needs Attention: {len(attention_needed)}",
+              "-" * 78,
+          ]
+
+          if attention_needed:
+              lines.append("ACTION NEEDED:")
+              lines.extend(attention_needed)
+              lines.append("-" * 78)
+
+          lines.append("HEALTHY MODULES:")
+          lines.extend(succeeded if succeeded else ["  (None parsed)"])
+          lines.append("=" * 78 + "\n\n")
+
+          summary_block = "\n".join(lines)
+          print(summary_block)
+
+          log_path = "etl_daily_summary.log"
+          existing = ""
+          if os.path.exists(log_path):
+              with open(log_path, "r", encoding="utf-8") as f:
+                  existing = f.read()
+
+          # Keep newest entries at the top and cap at 2,500 lines
+          combined = (summary_block + existing).splitlines()[:2500]
+          with open(log_path, "w", encoding="utf-8") as f:
+              f.write("\n".join(combined) + "\n")
+          EOF
+
+      - name: Upload Full Raw Run Log Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: etl-raw-log-${{ github.run_number }}
+          path: /tmp/etl_full_run.log
+          retention-days: 14
+
+      - name: Commit Daily Summary Log to Repo Root
+        run: |
+          git config user.name "vivida-etl-bot"
+          git config user.email "vivida-etl-bot@users.noreply.github.com"
+          git add etl_daily_summary.log
+          if ! git diff --staged --quiet; then
+            git commit -m "chore(etl): update daily run summary log [skip ci]"
+            git push
+          fi
