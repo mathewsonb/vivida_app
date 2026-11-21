@@ -447,7 +447,14 @@ def batch_mood_classifier(df: pd.DataFrame, batch_size: int = 8) -> pd.DataFrame
 
 
 class VividaIngestionPipeline:
+<<<<<<< Updated upstream
     def __init__(self, table_name: str = "events"):
+=======
+    def __init__(self, table_name: str = "events_test"): # set to "events_test" during TEST
+        load_dotenv(find_dotenv(".env.local"))
+        load_dotenv(find_dotenv(".env"))
+
+>>>>>>> Stashed changes
         self.table_name = table_name
         self.supabase_url = os.getenv(
             "VITE_SUPABASE_URL") or os.getenv("SUPABASE_URL")
