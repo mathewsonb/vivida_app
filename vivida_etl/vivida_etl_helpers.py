@@ -59,17 +59,19 @@ def _detect_chrome_binary_and_major() -> Tuple[Optional[str], Optional[int], Opt
         out = subprocess.check_output(
             [chrome_bin, "--version"], stderr=subprocess.STDOUT, timeout=5
         ).decode("utf-8", errors="ignore")
-        m = re.search(r"\b(\d{2,3})\.\d+\.\d+\.\d+\b", out)
+        m = re.search(r"(\d{2,3})\.\d+\.\d+", out)
         if m:
             major_version = int(m.group(1))
     except Exception:
         pass
 
-    # 2. Fallback: extract version folder from Selenium cache path (e.g. .../157.0.8103.78/chrome)
+    # 2. Fallback: extract version folder from binary or resolved symlink path
     if major_version is None:
-        m_path = re.search(r"/(\d{2,3})\.\d+\.\d+\.\d+/", chrome_bin)
-        if m_path:
-            major_version = int(m_path.group(1))
+        for candidate_path in (chrome_bin, os.path.realpath(chrome_bin)):
+            m_path = re.search(r"/(\d{2,3})\.\d+\.\d+", candidate_path)
+            if m_path:
+                major_version = int(m_path.group(1))
+                break
 
     # 3. Look for a matching cached chromedriver executable in Selenium's cache
     driver_bin: Optional[str] = None
@@ -80,6 +82,21 @@ def _detect_chrome_binary_and_major() -> Tuple[Optional[str], Optional[int], Opt
         )
         if cached_drivers:
             driver_bin = cached_drivers[-1]
+        else:
+            # Ask Selenium Manager to fetch the exact matching chromedriver for `major_version`
+            try:
+                from selenium.webdriver.common.selenium_manager import SeleniumManager
+
+                sm_args = ["--browser", "chrome",
+                           "--browser-version", str(major_version)]
+                if chrome_bin:
+                    sm_args.extend(["--browser-path", chrome_bin])
+                res = SeleniumManager().binary_paths(sm_args)
+                fetched_driver = res.get("driver_path")
+                if fetched_driver and os.path.exists(fetched_driver):
+                    driver_bin = fetched_driver
+            except Exception:
+                pass
 
     return chrome_bin, major_version, driver_bin
 
@@ -87,8 +104,8 @@ def _detect_chrome_binary_and_major() -> Tuple[Optional[str], Optional[int], Opt
 def create_stealth_driver(headless: bool = False):
     """
     Instantiates an undetected_chromedriver instance dynamically pinned to the
-    installed Chrome binary's major version, reusing cached drivers and clearing
-    stale patches automatically on SessionNotCreatedException.
+    installed Chrome binary's major version, using Selenium Manager to guarantee
+    an exact-version chromedriver binary and clearing stale patches on mismatch.
     """
     import undetected_chromedriver as uc
     from selenium.common.exceptions import SessionNotCreatedException
@@ -110,7 +127,6 @@ def create_stealth_driver(headless: bool = False):
         if major_version is not None:
             kwargs["version_main"] = major_version
         if cached_driver and os.path.exists(cached_driver):
-            # Copy to a writable temp path so uc.Patcher can patch it cleanly without mutating Selenium's cache
             uc_dir = os.path.expanduser(
                 "~/.local/share/undetected_chromedriver")
             os.makedirs(uc_dir, exist_ok=True)
