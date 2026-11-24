@@ -13,4 +13,4 @@ scraper/__pycache__/
 # Node / Build Dependencies
 node_modules/
 dist/
-build/
+build/*.egg-info/
