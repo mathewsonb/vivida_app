@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -62,6 +64,8 @@ jobs:
         run: |
           set +e
           xvfb-run -a python vivida_etl/pipeline_runner.py 2>&1 | tee /tmp/etl_full_run.log
+
+          git show origin/etl-logs:etl_daily_summary.log > /tmp/existing_summary.log 2>/dev/null || touch /tmp/existing_summary.log
 
           python - << 'EOF'
           import datetime
@@ -136,15 +140,12 @@ jobs:
           summary_block = "\n".join(lines)
           print(summary_block)
 
-          log_path = "etl_daily_summary.log"
-          existing = ""
-          if os.path.exists(log_path):
-              with open(log_path, "r", encoding="utf-8") as f:
-                  existing = f.read()
+          with open("/tmp/existing_summary.log", "r", encoding="utf-8") as f:
+              existing = f.read()
 
           # Prepend newest run at the top and cap at 2,500 lines
           combined = (summary_block + existing).splitlines()[:2500]
-          with open(log_path, "w", encoding="utf-8") as f:
+          with open("/tmp/etl_daily_summary.log", "w", encoding="utf-8") as f:
               f.write("\n".join(combined) + "\n")
           EOF
 
@@ -155,12 +156,19 @@ jobs:
           path: /tmp/etl_full_run.log
           retention-days: 14
 
-      - name: Commit Daily Summary Log to Repo Root
+      - name: Commit Daily Summary Log to Dedicated Log Branch
         run: |
           git config user.name "vivida-etl-bot"
           git config user.email "vivida-etl-bot@users.noreply.github.com"
+          if git show-ref --verify --quiet refs/remotes/origin/etl-logs; then
+            git checkout -B etl-logs origin/etl-logs
+          else
+            git checkout --orphan etl-logs
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+          cp /tmp/etl_daily_summary.log etl_daily_summary.log
           git add etl_daily_summary.log
           if ! git diff --staged --quiet; then
             git commit -m "chore(etl): update daily run summary log [skip ci]"
-            git push
+            git push -u origin etl-logs
           fi
