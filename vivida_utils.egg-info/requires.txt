@@ -1,7 +1,0 @@
-pandas
-numpy
-beautifulsoup4
-selenium
-undetected-chromedriver
-requests
-supabase

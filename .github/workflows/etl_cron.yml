@@ -93,7 +93,7 @@ jobs:
 
               has_fatal = bool(
                   re.search(
-                      r"\[(?:FATAL ERROR|PIPELINE ERROR|CRITICAL)\]|Execution error for|Standalone pipeline execution failed|Traceback \(most recent call last\)",
+                      r"\[(?:FATAL ERROR\vert{}PIPELINE ERROR\vert{}CRITICAL)\]|Execution error for|Standalone pipeline execution failed|Traceback \(most recent call last\)",
                       block,
                   )
               )
@@ -160,6 +160,7 @@ jobs:
         run: |
           git config user.name "vivida-etl-bot"
           git config user.email "vivida-etl-bot@users.noreply.github.com"
+          git reset --hard HEAD
           if git show-ref --verify --quiet refs/remotes/origin/etl-logs; then
             git checkout -B etl-logs origin/etl-logs
           else
