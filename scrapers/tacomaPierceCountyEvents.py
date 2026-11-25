@@ -42,7 +42,7 @@ logger = logging.getLogger("scrape_tacoma_pierce_county")
 
 BASE_URL = "https://www.visitpiercecounty.com"
 EVENTS_INDEX_URL = f"{BASE_URL}/events/"
-FALLBACK_API_KEY = "6b3a54ecd14e05060dce59bbb047940f"
+FALLBACK_API_KEY = "94b39b66668508579a75de492ad8868d"
 DEFAULT_VENUE = "Tacoma / Pierce County"
 DEFAULT_ADDRESS = "Tacoma, WA"
 

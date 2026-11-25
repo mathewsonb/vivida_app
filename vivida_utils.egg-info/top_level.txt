@@ -1,4 +1,0 @@
-dev
-scrapers
-src
-vivida_etl
