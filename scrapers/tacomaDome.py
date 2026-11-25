@@ -2,14 +2,12 @@
 tacomaDome.py
 Autonomous Production Scraper for Tacoma Dome (Tacoma, WA).
 Uses HTTP-first listing & concurrent detail-page fetching (workers=10),
-with lazy single-browser Xvfb/Chrome fallback and centralized parse_event_dates normalization.
+with lazy single-browser fallback and centralized parse_event_dates normalization.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import glob
 import logging
 import re
-import shutil
 import sys
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -23,9 +21,10 @@ from urllib3.util.retry import Retry
 from vivida_etl import (
     VividaIngestionPipeline,
     clean_html_source,
+    create_stealth_driver,
     fetch_event_text,
     parse_event_dates,
-    create_stealth_driver
+    virtual_display,
 )
 
 logging.basicConfig(
@@ -72,7 +71,8 @@ def extract_css_bg_image(style_attr: Optional[str]) -> Optional[str]:
     if not style_attr:
         return None
     match = re.search(
-        r'url\((?:["\']?)(.*?)(?:["\']?)\)', style_attr, re.IGNORECASE)
+        r'url\((?:["\']?)(.*?)(?:["\']?)\)', style_attr, re.IGNORECASE
+    )
     if match:
         return resolve_url(match.group(1))
     return None
@@ -113,8 +113,7 @@ def parse_detail_html(
     if not dates:
         det_date = det_soup.select_one("div.date") or det_soup.find("time")
         if det_date:
-            raw_dt = det_date.get(
-                "aria-label") or det_date.get_text(" ", strip=True)
+            raw_dt = det_date.get("aria-label") or det_date.get_text(" ", strip=True)
             dates = parse_event_dates(normalize_ws(raw_dt))
 
     container = (
@@ -130,8 +129,7 @@ def parse_detail_html(
     if not ticket_link or ticket_link == detail_url:
         t_btn = det_soup.select_one("a.tickets, a.onsalenow") or det_soup.find(
             "a",
-            href=re.compile(
-                r"ticket|ticketmaster|axs|buy|bit\.ly", re.IGNORECASE),
+            href=re.compile(r"ticket|ticketmaster|axs|buy|bit\.ly", re.IGNORECASE),
         )
         if t_btn and t_btn.get("href"):
             ticket_link = resolve_url(t_btn["href"]) or ticket_link
@@ -172,28 +170,29 @@ def scraper() -> pd.DataFrame:
     logger.info(f"[START] Scraping Tacoma Dome: {TARGET_URL}")
     session = build_http_session(pool_size=12)
 
-    display = None
+    disp_ctx = None
+    active_disp = None
     driver = None
     main_html: Optional[str] = None
 
     def ensure_browser():
-        nonlocal display, driver
+        nonlocal disp_ctx, active_disp, driver
+        if disp_ctx is None:
+            disp_ctx = virtual_display(size=(1920, 1080))
+            active_disp = disp_ctx.__enter__()
         if driver is None:
-            from pyvirtualdisplay import Display
-
-            display = Display(visible=0, size=(1920, 1080), backend="xvfb")
-            display.start()
-            driver = create_stealth_driver()
+            driver = create_stealth_driver(headless=(active_disp is None))
         return driver
 
     try:
-        # 1. HTTP-first listing check (falls back to Chrome if WAF blocks or Load More pagination exists)
+        # 1. HTTP-first listing check (falls back to browser if WAF blocks or Load More pagination exists)
         try:
             resp = session.get(TARGET_URL, timeout=15)
             resp.raise_for_status()
             soup_check = BeautifulSoup(resp.text, "html.parser")
             cards = soup_check.find_all(
-                "div", class_=re.compile(r"^eventItem.*clearfix$"))
+                "div", class_=re.compile(r"^eventItem.*clearfix$")
+            )
             load_btn = soup_check.select_one(
                 "#loadMoreEvents, a.loadMore, button.loadMore, a.btn-load-more"
             )
@@ -205,11 +204,11 @@ def scraper() -> pd.DataFrame:
             elif cards:
                 logger.info(
                     f"[LISTING] Initial HTTP fetch found {len(cards)} cards with Load More pagination; "
-                    "launching Xvfb + Chrome to unfold full listing..."
+                    "launching browser to unfold full listing..."
                 )
         except Exception as http_err:
             logger.warning(
-                f"[LISTING] HTTP listing fetch failed ({http_err}); launching Xvfb + Chrome fallback..."
+                f"[LISTING] HTTP listing fetch failed ({http_err}); launching browser fallback..."
             )
 
         if not main_html:
@@ -225,7 +224,8 @@ def scraper() -> pd.DataFrame:
                     buttons = drv.find_elements(By.ID, "loadMoreEvents")
                     if not buttons:
                         buttons = drv.find_elements(
-                            By.CSS_SELECTOR, "a.loadMore, button.loadMore, a.btn-load-more"
+                            By.CSS_SELECTOR,
+                            "a.loadMore, button.loadMore, a.btn-load-more",
                         )
                     if buttons and buttons[0].is_displayed() and buttons[0].is_enabled():
                         btn = buttons[0]
@@ -237,7 +237,8 @@ def scraper() -> pd.DataFrame:
                         drv.execute_script("arguments[0].click();", btn)
                         load_clicks += 1
                         logger.info(
-                            f"[PAGINATION] Clicked 'Load More' (click #{load_clicks})...")
+                            f"[PAGINATION] Clicked 'Load More' (click #{load_clicks})..."
+                        )
                         time.sleep(2.5)
                     else:
                         if load_clicks:
@@ -247,11 +248,11 @@ def scraper() -> pd.DataFrame:
                         break
                 except Exception as nav_err:
                     logger.info(
-                        f"[PAGINATION END] Stopped after {load_clicks} clicks: {nav_err}")
+                        f"[PAGINATION END] Stopped after {load_clicks} clicks: {nav_err}"
+                    )
                     break
 
-            drv.execute_script(
-                "window.scrollTo(0, document.body.scrollHeight / 2);")
+            drv.execute_script("window.scrollTo(0, document.body.scrollHeight / 2);")
             time.sleep(1)
             main_html = drv.page_source
 
@@ -264,9 +265,11 @@ def scraper() -> pd.DataFrame:
             element.decompose()
 
         event_items = target_section.find_all(
-            "div", class_=re.compile(r"^eventItem.*clearfix$"))
+            "div", class_=re.compile(r"^eventItem.*clearfix$")
+        )
         logger.info(
-            f"[PARSER SUCCESS] Found {len(event_items)} Tacoma Dome event blocks.")
+            f"[PARSER SUCCESS] Found {len(event_items)} Tacoma Dome event blocks."
+        )
 
         staged_items: List[Dict[str, Any]] = []
         seen_urls: Set[str] = set()
@@ -274,8 +277,9 @@ def scraper() -> pd.DataFrame:
         for idx, event in enumerate(event_items, start=1):
             try:
                 h3_tag = event.find("h3")
-                card_title = normalize_ws(h3_tag.get_text(
-                    " ", strip=True)) if h3_tag else ""
+                card_title = (
+                    normalize_ws(h3_tag.get_text(" ", strip=True)) if h3_tag else ""
+                )
                 if not card_title:
                     continue
 
@@ -291,11 +295,12 @@ def scraper() -> pd.DataFrame:
                 raw_date_str = None
                 if date_div:
                     raw_date_str = normalize_ws(
-                        date_div.get(
-                            "aria-label") or date_div.get_text(" ", strip=True)
+                        date_div.get("aria-label")
+                        or date_div.get_text(" ", strip=True)
                     )
-                start_time_seq = parse_event_dates(
-                    raw_date_str) if raw_date_str else []
+                start_time_seq = (
+                    parse_event_dates(raw_date_str) if raw_date_str else []
+                )
 
                 h4_tag = event.find("h4")
                 description = (
@@ -304,8 +309,7 @@ def scraper() -> pd.DataFrame:
                     else card_title
                 )
 
-                bg_div = event.find(
-                    "div", class_=re.compile(r"background-img"))
+                bg_div = event.find("div", class_=re.compile(r"background-img"))
                 image_url = (
                     extract_css_bg_image(bg_div["style"])
                     if bg_div and bg_div.get("style")
@@ -313,11 +317,11 @@ def scraper() -> pd.DataFrame:
                 )
                 if not image_url:
                     img_tag = event.find("img", src=True)
-                    image_url = resolve_url(
-                        img_tag.get("src")) if img_tag else None
+                    image_url = resolve_url(img_tag.get("src")) if img_tag else None
 
-                t_anchor = event.find("a", class_=re.compile(
-                    r"tickets|onsalenow", re.IGNORECASE))
+                t_anchor = event.find(
+                    "a", class_=re.compile(r"tickets|onsalenow", re.IGNORECASE)
+                )
                 ticket_link = (
                     resolve_url(t_anchor["href"])
                     if t_anchor and t_anchor.get("href")
@@ -368,7 +372,7 @@ def scraper() -> pd.DataFrame:
 
         logger.info(
             f"HTTP detail batch complete: {len(enriched_items)} parsed, "
-            f"{len(fallback_queue)} queued for Chrome fallback."
+            f"{len(fallback_queue)} queued for browser fallback."
         )
 
         # 3. Single-browser fallback ONLY for detail pages that failed HTTP
@@ -391,8 +395,7 @@ def scraper() -> pd.DataFrame:
                         item["big_desc"] = big_desc
                         item["ticket_link"] = ticket_link
                     except Exception as fb_err:
-                        logger.warning(
-                            f"[FALLBACK WARN] Failed {detail_url}: {fb_err}")
+                        logger.warning(f"[FALLBACK WARN] Failed {detail_url}: {fb_err}")
                 enriched_items.append(item)
 
         raw_records = []
@@ -421,10 +424,10 @@ def scraper() -> pd.DataFrame:
                 driver.quit()
             except Exception:
                 pass
-        if display:
-            logger.info("[CLEANUP] Stopping PyVirtualDisplay server...")
+        if disp_ctx is not None:
+            logger.info("[CLEANUP] Stopping virtual display context...")
             try:
-                display.stop()
+                disp_ctx.__exit__(None, None, None)
             except Exception:
                 pass
 
@@ -438,9 +441,11 @@ if __name__ == "__main__":
         success = pipeline.run_standalone_pipeline(raw_df)
         if success:
             logger.info(
-                "[PIPELINE SUCCESS] Tacoma Dome scraper execution completed successfully.")
+                "[PIPELINE SUCCESS] Tacoma Dome scraper execution completed successfully."
+            )
         else:
             logger.error(
-                "[PIPELINE ERROR] Tacoma Dome scraper pipeline execution reported errors.")
+                "[PIPELINE ERROR] Tacoma Dome scraper pipeline execution reported errors."
+            )
     else:
         logger.warning("[EXIT] No events scraped. Pipeline handoff skipped.")

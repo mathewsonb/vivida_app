@@ -2,7 +2,7 @@
 tacomaParksAndRec.py
 Autonomous Production Scraper for Metro Parks Tacoma (The Events Calendar / Tribe Engine).
 Uses HTTP-first fetching (Tribe REST API + concurrent HTML detail fallback, workers=10)
-with lazy Xvfb/Chrome fallback, in-browser Tribe API execution after WAF clearance,
+with lazy cross-platform browser fallback, in-browser Tribe API execution after WAF clearance,
 and centralized parse_event_dates range normalization.
 """
 
@@ -13,6 +13,7 @@ import re
 import sys
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import urlencode
 
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -26,6 +27,7 @@ from vivida_etl import (
     create_stealth_driver,
     fetch_event_text,
     parse_event_dates,
+    virtual_display,
 )
 
 logging.basicConfig(
@@ -118,14 +120,11 @@ def parse_tribe_date_range(event_el: BeautifulSoup) -> List[str]:
     if not event_el:
         return []
 
-    from_span = event_el.find("span", class_=re.compile(
-        r"tribe-event-date-start", re.I))
-    to_span = event_el.find("span", class_=re.compile(
-        r"tribe-event-date-end", re.I))
+    from_span = event_el.find("span", class_=re.compile(r"tribe-event-date-start", re.I))
+    to_span = event_el.find("span", class_=re.compile(r"tribe-event-date-end", re.I))
 
     if from_span and to_span:
-        dt_start = clean_and_parse_single_date(
-            from_span.get_text(" ", strip=True))
+        dt_start = clean_and_parse_single_date(from_span.get_text(" ", strip=True))
         dt_end = clean_and_parse_single_date(to_span.get_text(" ", strip=True))
         if dt_start:
             start_iso = dt_start.strftime("%Y-%m-%d")
@@ -135,19 +134,18 @@ def parse_tribe_date_range(event_el: BeautifulSoup) -> List[str]:
             return parse_event_dates(start_iso)
 
     if from_span:
-        dt_start = clean_and_parse_single_date(
-            from_span.get_text(" ", strip=True))
+        dt_start = clean_and_parse_single_date(from_span.get_text(" ", strip=True))
         if dt_start:
             return parse_event_dates(dt_start.strftime("%Y-%m-%d"))
 
     time_tag = (
-        event_el.find("time", class_=re.compile(
-            r"tribe-events-calendar-list__event-datetime", re.I))
+        event_el.find(
+            "time", class_=re.compile(r"tribe-events-calendar-list__event-datetime", re.I)
+        )
         or event_el.find("time")
     )
     if time_tag:
-        datetime_attr = time_tag.get(
-            "datetime") or time_tag.get("data-datetime")
+        datetime_attr = time_tag.get("datetime") or time_tag.get("data-datetime")
         if datetime_attr:
             dt_attr = pd.to_datetime(datetime_attr, errors="coerce")
             if pd.notnull(dt_attr):
@@ -192,22 +190,21 @@ def normalize_tribe_events_payload(
             start_iso = dt_start.strftime("%Y-%m-%d")
             if pd.notnull(dt_end) and dt_end.date() > dt_start.date():
                 start_times = parse_event_dates(
-                    f"{start_iso} - {dt_end.strftime('%Y-%m-%d')}")
+                    f"{start_iso} - {dt_end.strftime('%Y-%m-%d')}"
+                )
             else:
                 start_times = parse_event_dates(start_iso)
 
         if not start_times:
             continue
 
-        venue_obj = ev.get("venue") if isinstance(
-            ev.get("venue"), dict) else {}
+        venue_obj = ev.get("venue") if isinstance(ev.get("venue"), dict) else {}
         venue_name = strip_html_text(venue_obj.get("venue")) or DEFAULT_VENUE
 
         addr_parts = [
             strip_html_text(venue_obj.get("address")),
             strip_html_text(venue_obj.get("city")),
-            strip_html_text(venue_obj.get("state")
-                            or venue_obj.get("province")),
+            strip_html_text(venue_obj.get("state") or venue_obj.get("province")),
             strip_html_text(venue_obj.get("zip")),
         ]
         full_addr = ", ".join([p for p in addr_parts if p])
@@ -239,15 +236,16 @@ def normalize_tribe_events_payload(
     return records
 
 
-def fetch_via_tribe_api(session: requests.Session, max_pages: int = 10) -> List[Dict[str, Any]]:
+def fetch_via_tribe_api(
+    session: requests.Session, max_pages: int = 10
+) -> List[Dict[str, Any]]:
     """
     Fast-path: queries WordPress Tribe Events REST API directly to retrieve structured
     titles, dates, venues, addresses, images, and full HTML descriptions without scraping.
     """
     records: List[Dict[str, Any]] = []
     seen_urls: Set[str] = set()
-    now_str = pd.Timestamp.now(
-        tz="America/Los_Angeles").strftime("%Y-%m-%d 00:00:00")
+    now_str = pd.Timestamp.now(tz="America/Los_Angeles").strftime("%Y-%m-%d 00:00:00")
 
     for page in range(1, max_pages + 1):
         resp = session.get(
@@ -257,8 +255,7 @@ def fetch_via_tribe_api(session: requests.Session, max_pages: int = 10) -> List[
         )
         if resp.status_code != 200:
             if page == 1:
-                raise RuntimeError(
-                    f"Tribe REST API returned HTTP {resp.status_code}")
+                raise RuntimeError(f"Tribe REST API returned HTTP {resp.status_code}")
             break
 
         data = resp.json()
@@ -294,12 +291,11 @@ def wait_for_waf_clearance(driver, timeout: int = 20) -> None:
 def fetch_tribe_api_in_browser(driver, max_pages: int = 10) -> List[Dict[str, Any]]:
     """
     Executes same-origin fetch() calls to the Tribe REST API directly inside the
-    WAF-cleared Chrome browser session, inheriting cf_clearance cookies & TLS fingerprint.
+    WAF-cleared browser session, inheriting cf_clearance cookies & TLS fingerprint.
     """
     records: List[Dict[str, Any]] = []
     seen_urls: Set[str] = set()
-    now_str = pd.Timestamp.now(
-        tz="America/Los_Angeles").strftime("%Y-%m-%d 00:00:00")
+    now_str = pd.Timestamp.now(tz="America/Los_Angeles").strftime("%Y-%m-%d 00:00:00")
 
     driver.set_script_timeout(20)
     js_fetch = """
@@ -314,8 +310,6 @@ def fetch_tribe_api_in_browser(driver, max_pages: int = 10) -> List[Dict[str, An
     """
 
     for page in range(1, max_pages + 1):
-        from urllib.parse import urlencode
-
         qs = urlencode({"per_page": 50, "page": page, "start_date": now_str})
         api_url = f"/wp-json/tribe/events/v1/events?{qs}"
         res = driver.execute_async_script(js_fetch, api_url)
@@ -358,7 +352,12 @@ def parse_detail_html(
 
     container = (
         det_soup.find("section", class_=re.compile(r"event-details"))
-        or det_soup.find("div", class_=re.compile(r"tribe-events-single|entry-content|elementor-text-editor"))
+        or det_soup.find(
+            "div",
+            class_=re.compile(
+                r"tribe-events-single|entry-content|elementor-text-editor"
+            ),
+        )
         or det_soup.find("main")
         or det_soup
     )
@@ -366,8 +365,9 @@ def parse_detail_html(
     big_desc = normalize_ws(rich_text) if rich_text else current_desc
 
     ticket_link = current_ticket
-    t_btn = det_soup.find("a", href=re.compile(
-        r"ticket|register|buy", re.IGNORECASE))
+    t_btn = det_soup.find(
+        "a", href=re.compile(r"ticket|register|buy", re.IGNORECASE)
+    )
     if t_btn and t_btn.get("href"):
         ticket_link = resolve_url(t_btn["href"]) or ticket_link
 
@@ -402,232 +402,270 @@ def fetch_detail_via_http(
 
 
 def scraper() -> pd.DataFrame:
-    """Scrapes Metro Parks Tacoma events via Tribe REST API first, falling back to Chrome + in-browser API / HTML."""
+    """Scrapes Metro Parks Tacoma events via Tribe REST API first, falling back to browser + in-browser API / HTML."""
     logger.info(f"[START] Scraping Metro Parks Tacoma: {TARGET_URL}")
     session = build_http_session(pool_size=12)
 
-    # 1. Fast-Path: WordPress Tribe Events REST API via HTTP
     try:
-        api_records = fetch_via_tribe_api(session)
-        if api_records:
-            logger.info(
-                f"[TRIBE API SUCCESS] Retrieved {len(api_records)} structured events directly via REST API."
-            )
-            return pd.DataFrame(api_records)
-        logger.warning(
-            "[TRIBE API] Returned 0 events; falling back to HTML scraping...")
-    except Exception as api_err:
-        logger.warning(
-            f"[TRIBE API] Unavailable ({api_err}); falling back to HTML scraping...")
-
-    # 2. Secondary Path: HTTP HTML Listing + Concurrent Detail Fetch (with lazy Xvfb/Chrome fallback)
-    main_html: Optional[str] = None
-    try:
-        resp = session.get(TARGET_URL, timeout=15)
-        resp.raise_for_status()
-        if "tribe-events" in resp.text or "/event/" in resp.text:
-            main_html = resp.text
-            logger.info(
-                "[HTTP FAST-PATH] Loaded Metro Parks Tacoma HTML listing via HTTP.")
-    except Exception as http_err:
-        logger.warning(
-            f"[HTTP LISTING] Failed ({http_err}); launching Xvfb + Chrome fallback...")
-
-    if not main_html:
-        from pyvirtualdisplay import Display
-
-        display = Display(visible=0, size=(1920, 1080), backend="xvfb")
-        display.start()
-        driver = None
+        # 1. Fast-Path: WordPress Tribe Events REST API via HTTP
         try:
-            driver = create_stealth_driver()
-            driver.get(TARGET_URL)
-            wait_for_waf_clearance(driver, timeout=20)
-            time.sleep(2)
-
-            # Try same-origin Tribe REST API directly inside the WAF-cleared browser first!
-            browser_api_records = fetch_tribe_api_in_browser(driver)
-            if browser_api_records:
+            api_records = fetch_via_tribe_api(session)
+            if api_records:
                 logger.info(
-                    f"[IN-BROWSER TRIBE API SUCCESS] Retrieved {len(browser_api_records)} structured events via Chrome session."
+                    f"[TRIBE API SUCCESS] Retrieved {len(api_records)} structured events directly via REST API."
                 )
-                return pd.DataFrame(browser_api_records)
-
-            driver.execute_script(
-                "window.scrollTo(0, document.body.scrollHeight / 2);")
-            time.sleep(2)
-            main_html = driver.page_source
-            logger.info(
-                f"[CHROME PAGE] Loaded title='{normalize_ws(driver.title)}', html_len={len(main_html)}"
-            )
-
-            # Transfer solved WAF cookies + exact browser User-Agent to requests.Session
-            ua = driver.execute_script("return navigator.userAgent;")
-            if ua:
-                session.headers.update({"User-Agent": ua})
-            for cookie in driver.get_cookies():
-                session.cookies.set(
-                    cookie["name"],
-                    cookie["value"],
-                    domain=cookie.get("domain"),
-                    path=cookie.get("path", "/"),
-                )
-        finally:
-            if driver:
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
-            display.stop()
-
-    soup = BeautifulSoup(clean_html_source(main_html), "html.parser")
-    target_section = (
-        soup.find("ul", class_=re.compile(r"tribe-events-calendar-list"))
-        or soup.find("div", id="tribe-events-pg-template")
-        or soup.find("main")
-        or soup
-    )
-    for element in target_section(["script", "style"]):
-        element.decompose()
-
-    event_items = target_section.find_all(
-        ["div", "article", "li"],
-        class_=re.compile(
-            r"tribe-events-calendar-list__event-row|tribe-events-calendar-list__event\b|tribe-events-single|event-card|type-tribe_events",
-            re.I,
-        ),
-    )
-    if not event_items:
-        event_items = target_section.find_all("article")
-
-    logger.info(
-        f"[PARSER SUCCESS] Found {len(event_items)} Metro Parks Tacoma event rows.")
-
-    staged_items: List[Dict[str, Any]] = []
-    seen_urls: Set[str] = set()
-
-    for idx, event in enumerate(event_items, start=1):
-        try:
-            h4_tag = event.find(["h4", "h3", "h2"], class_=re.compile(
-                r"title", re.I)) or event.find(["h4", "h3", "h2"])
-            card_title = normalize_ws(h4_tag.get_text(
-                " ", strip=True)) if h4_tag else ""
-            if not card_title:
-                continue
-
-            anchor = h4_tag.find(
-                "a", href=True) if h4_tag else event.find("a", href=True)
-            detail_url = resolve_url(anchor["href"]) if anchor else None
-
-            dedup_key = detail_url or card_title.lower()
-            if dedup_key in seen_urls:
-                continue
-            seen_urls.add(dedup_key)
-
-            venue_span = event.find(["span", "div"], class_=re.compile(
-                r"tribe-events-calendar-list__event-venue-title|venue"))
-            venue_name = normalize_ws(venue_span.get_text(
-                " ", strip=True)) if venue_span else DEFAULT_VENUE
-
-            addr_span = event.find(["span", "div"], class_=re.compile(
-                r"tribe-events-calendar-list__event-venue-address|address"))
-            address = normalize_ws(addr_span.get_text(
-                " ", strip=True)) if addr_span else DEFAULT_ADDRESS
-
-            start_time_seq = parse_tribe_date_range(event)
-
-            desc_div = event.find("div", class_=re.compile(
-                r"tribe-events-calendar-list__event-description|excerpt"))
-            description = normalize_ws(desc_div.get_text(
-                " ", strip=True)) if desc_div else card_title
-
-            img_tag = event.find("img", src=True)
-            image_url = resolve_url(img_tag.get("src")) if img_tag else None
-
-            t_anchor = event.find("a", href=re.compile(
-                r"ticket|register|buy", re.IGNORECASE))
-            ticket_link = resolve_url(t_anchor["href"]) if t_anchor and t_anchor.get(
-                "href") else detail_url
-
-            staged_items.append(
-                {
-                    "venue_name": venue_name,
-                    "address": address,
-                    "title": card_title,
-                    "start_time": start_time_seq,
-                    "description": description,
-                    "big_desc": description,
-                    "external_url": detail_url,
-                    "image_url": image_url,
-                    "ticket_link": ticket_link,
-                }
-            )
-        except Exception as item_err:
-            logger.error(
-                f"[ITEM ERROR] Failed parsing Metro Parks event #{idx}: {item_err}", exc_info=True)
-
-    if not staged_items:
-        return pd.DataFrame()
-
-    logger.info(
-        f"Batch-fetching {len(staged_items)} detail pages via HTTP (workers=10)...")
-    enriched_items: List[Dict[str, Any]] = []
-    fallback_queue: List[Dict[str, Any]] = []
-
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [executor.submit(
-            fetch_detail_via_http, session, item) for item in staged_items]
-        for fut in as_completed(futures):
-            updated_item, ok = fut.result()
-            if ok:
-                enriched_items.append(updated_item)
-            else:
-                fallback_queue.append(updated_item)
-
-    if fallback_queue:
-        from pyvirtualdisplay import Display
-
-        display = Display(visible=0, size=(1920, 1080), backend="xvfb")
-        display.start()
-        driver = None
-        try:
-            driver = create_stealth_driver()
-            for item in fallback_queue:
-                detail_url = item.get("external_url")
-                if detail_url:
-                    try:
-                        driver.get(detail_url)
-                        wait_for_waf_clearance(driver, timeout=12)
-                        dates, big_desc, ticket_link = parse_detail_html(
-                            driver.page_source,
-                            item["start_time"],
-                            item["big_desc"] or item["description"] or "",
-                            item.get("ticket_link"),
-                        )
-                        item["start_time"] = dates
-                        item["big_desc"] = big_desc
-                        item["ticket_link"] = ticket_link
-                    except Exception as fb_err:
-                        logger.warning(
-                            f"[FALLBACK WARN] Failed {detail_url}: {fb_err}")
-                enriched_items.append(item)
-        finally:
-            if driver:
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
-            display.stop()
-
-    raw_records = []
-    for item in enriched_items:
-        if not item.get("start_time"):
+                return pd.DataFrame(api_records)
             logger.warning(
-                f"[SKIP] No valid dates parsed for '{item.get('title')}'.")
-            continue
-        raw_records.append(item)
+                "[TRIBE API] Returned 0 events; falling back to HTML scraping..."
+            )
+        except Exception as api_err:
+            logger.warning(
+                f"[TRIBE API] Unavailable ({api_err}); falling back to HTML scraping..."
+            )
 
-    return pd.DataFrame(raw_records) if raw_records else pd.DataFrame()
+        # 2. Secondary Path: HTTP HTML Listing + Concurrent Detail Fetch (with lazy browser fallback)
+        main_html: Optional[str] = None
+        try:
+            resp = session.get(TARGET_URL, timeout=15)
+            resp.raise_for_status()
+            if "tribe-events" in resp.text or "/event/" in resp.text:
+                main_html = resp.text
+                logger.info(
+                    "[HTTP FAST-PATH] Loaded Metro Parks Tacoma HTML listing via HTTP."
+                )
+        except Exception as http_err:
+            logger.warning(
+                f"[HTTP LISTING] Failed ({http_err}); launching browser fallback..."
+            )
+
+        if not main_html:
+            driver = None
+            with virtual_display(size=(1920, 1080)) as disp:
+                try:
+                    driver = create_stealth_driver(headless=(disp is None))
+                    driver.get(TARGET_URL)
+                    wait_for_waf_clearance(driver, timeout=20)
+                    time.sleep(2)
+
+                    # Try same-origin Tribe REST API directly inside the WAF-cleared browser first!
+                    browser_api_records = fetch_tribe_api_in_browser(driver)
+                    if browser_api_records:
+                        logger.info(
+                            f"[IN-BROWSER TRIBE API SUCCESS] Retrieved {len(browser_api_records)} structured events via browser session."
+                        )
+                        return pd.DataFrame(browser_api_records)
+
+                    driver.execute_script(
+                        "window.scrollTo(0, document.body.scrollHeight / 2);"
+                    )
+                    time.sleep(2)
+                    main_html = driver.page_source
+                    logger.info(
+                        f"[BROWSER PAGE] Loaded title='{normalize_ws(driver.title)}', html_len={len(main_html)}"
+                    )
+
+                    # Transfer solved WAF cookies + exact browser User-Agent to requests.Session
+                    ua = driver.execute_script("return navigator.userAgent;")
+                    if ua:
+                        session.headers.update({"User-Agent": ua})
+                    for cookie in driver.get_cookies():
+                        session.cookies.set(
+                            cookie["name"],
+                            cookie["value"],
+                            domain=cookie.get("domain"),
+                            path=cookie.get("path", "/"),
+                        )
+                finally:
+                    if driver:
+                        try:
+                            driver.quit()
+                        except Exception:
+                            pass
+
+        soup = BeautifulSoup(clean_html_source(main_html), "html.parser")
+        target_section = (
+            soup.find("ul", class_=re.compile(r"tribe-events-calendar-list"))
+            or soup.find("div", id="tribe-events-pg-template")
+            or soup.find("main")
+            or soup
+        )
+        for element in target_section(["script", "style"]):
+            element.decompose()
+
+        event_items = target_section.find_all(
+            ["div", "article", "li"],
+            class_=re.compile(
+                r"tribe-events-calendar-list__event-row|tribe-events-calendar-list__event\b|tribe-events-single|event-card|type-tribe_events",
+                re.I,
+            ),
+        )
+        if not event_items:
+            event_items = target_section.find_all("article")
+
+        logger.info(
+            f"[PARSER SUCCESS] Found {len(event_items)} Metro Parks Tacoma event rows."
+        )
+
+        staged_items: List[Dict[str, Any]] = []
+        seen_urls: Set[str] = set()
+
+        for idx, event in enumerate(event_items, start=1):
+            try:
+                h4_tag = event.find(
+                    ["h4", "h3", "h2"], class_=re.compile(r"title", re.I)
+                ) or event.find(["h4", "h3", "h2"])
+                card_title = (
+                    normalize_ws(h4_tag.get_text(" ", strip=True)) if h4_tag else ""
+                )
+                if not card_title:
+                    continue
+
+                anchor = (
+                    h4_tag.find("a", href=True)
+                    if h4_tag
+                    else event.find("a", href=True)
+                )
+                detail_url = resolve_url(anchor["href"]) if anchor else None
+
+                dedup_key = detail_url or card_title.lower()
+                if dedup_key in seen_urls:
+                    continue
+                seen_urls.add(dedup_key)
+
+                venue_span = event.find(
+                    ["span", "div"],
+                    class_=re.compile(
+                        r"tribe-events-calendar-list__event-venue-title|venue"
+                    ),
+                )
+                venue_name = (
+                    normalize_ws(venue_span.get_text(" ", strip=True))
+                    if venue_span
+                    else DEFAULT_VENUE
+                )
+
+                addr_span = event.find(
+                    ["span", "div"],
+                    class_=re.compile(
+                        r"tribe-events-calendar-list__event-venue-address|address"
+                    ),
+                )
+                address = (
+                    normalize_ws(addr_span.get_text(" ", strip=True))
+                    if addr_span
+                    else DEFAULT_ADDRESS
+                )
+
+                start_time_seq = parse_tribe_date_range(event)
+
+                desc_div = event.find(
+                    "div",
+                    class_=re.compile(
+                        r"tribe-events-calendar-list__event-description|excerpt"
+                    ),
+                )
+                description = (
+                    normalize_ws(desc_div.get_text(" ", strip=True))
+                    if desc_div
+                    else card_title
+                )
+
+                img_tag = event.find("img", src=True)
+                image_url = resolve_url(img_tag.get("src")) if img_tag else None
+
+                t_anchor = event.find(
+                    "a", href=re.compile(r"ticket|register|buy", re.IGNORECASE)
+                )
+                ticket_link = (
+                    resolve_url(t_anchor["href"])
+                    if t_anchor and t_anchor.get("href")
+                    else detail_url
+                )
+
+                staged_items.append(
+                    {
+                        "venue_name": venue_name,
+                        "address": address,
+                        "title": card_title,
+                        "start_time": start_time_seq,
+                        "description": description,
+                        "big_desc": description,
+                        "external_url": detail_url,
+                        "image_url": image_url,
+                        "ticket_link": ticket_link,
+                    }
+                )
+            except Exception as item_err:
+                logger.error(
+                    f"[ITEM ERROR] Failed parsing Metro Parks event #{idx}: {item_err}",
+                    exc_info=True,
+                )
+
+        if not staged_items:
+            return pd.DataFrame()
+
+        logger.info(
+            f"Batch-fetching {len(staged_items)} detail pages via HTTP (workers=10)..."
+        )
+        enriched_items: List[Dict[str, Any]] = []
+        fallback_queue: List[Dict[str, Any]] = []
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [
+                executor.submit(fetch_detail_via_http, session, item)
+                for item in staged_items
+            ]
+            for fut in as_completed(futures):
+                updated_item, ok = fut.result()
+                if ok:
+                    enriched_items.append(updated_item)
+                else:
+                    fallback_queue.append(updated_item)
+
+        if fallback_queue:
+            driver = None
+            with virtual_display(size=(1920, 1080)) as disp:
+                try:
+                    driver = create_stealth_driver(headless=(disp is None))
+                    for item in fallback_queue:
+                        detail_url = item.get("external_url")
+                        if detail_url:
+                            try:
+                                driver.get(detail_url)
+                                wait_for_waf_clearance(driver, timeout=12)
+                                dates, big_desc, ticket_link = parse_detail_html(
+                                    driver.page_source,
+                                    item["start_time"],
+                                    item["big_desc"] or item["description"] or "",
+                                    item.get("ticket_link"),
+                                )
+                                item["start_time"] = dates
+                                item["big_desc"] = big_desc
+                                item["ticket_link"] = ticket_link
+                            except Exception as fb_err:
+                                logger.warning(
+                                    f"[FALLBACK WARN] Failed {detail_url}: {fb_err}"
+                                )
+                        enriched_items.append(item)
+                finally:
+                    if driver:
+                        try:
+                            driver.quit()
+                        except Exception:
+                            pass
+
+        raw_records = []
+        for item in enriched_items:
+            if not item.get("start_time"):
+                logger.warning(
+                    f"[SKIP] No valid dates parsed for '{item.get('title')}'."
+                )
+                continue
+            raw_records.append(item)
+
+        return pd.DataFrame(raw_records) if raw_records else pd.DataFrame()
+    finally:
+        session.close()
 
 
 if __name__ == "__main__":
@@ -639,9 +677,11 @@ if __name__ == "__main__":
         success = pipeline.run_standalone_pipeline(raw_df)
         if success:
             logger.info(
-                "[PIPELINE SUCCESS] Metro Parks Tacoma scraper execution completed successfully.")
+                "[PIPELINE SUCCESS] Metro Parks Tacoma scraper execution completed successfully."
+            )
         else:
             logger.error(
-                "[PIPELINE ERROR] Metro Parks Tacoma scraper pipeline execution reported errors.")
+                "[PIPELINE ERROR] Metro Parks Tacoma scraper pipeline execution reported errors."
+            )
     else:
         logger.warning("[EXIT] No events scraped. Pipeline handoff skipped.")

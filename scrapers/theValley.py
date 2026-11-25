@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import re
 import sys
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import unquote
 
 from bs4 import BeautifulSoup
@@ -57,7 +57,7 @@ def normalize_url(raw_url: Optional[str]) -> Optional[str]:
     if not raw_url:
         return None
     url = raw_url.strip()
-    if not url or url.startswith("#") or url.startswith("javascript:"):
+    if not url or url.startswith("#") or url.lower().startswith("javascript:"):
         return None
     if url.startswith("//"):
         return f"https:{url}"
@@ -101,8 +101,7 @@ def fetch_rendered_page(
         if wait_selector:
             try:
                 WebDriverWait(driver, timeout).until(
-                    EC.presence_of_element_located(
-                        (By.CSS_SELECTOR, wait_selector))
+                    EC.presence_of_element_located((By.CSS_SELECTOR, wait_selector))
                 )
             except Exception:
                 pass
@@ -208,8 +207,7 @@ def fetch_detail_via_http(
             item.get("ticket_link"),
         )
         item["start_time"] = dates  # type: ignore[assignment]
-        item["big_desc"] = big_desc or item.get(
-            "description") or item.get("title")
+        item["big_desc"] = big_desc or item.get("description") or item.get("title")
         item["ticket_link"] = ticket_link or detail_url
         return item, True
     except Exception:
@@ -228,21 +226,21 @@ def scraper() -> pd.DataFrame:
         try:
             resp = session.get(TARGET_URL, timeout=15)
             resp.raise_for_status()
-            candidate_soup = BeautifulSoup(
-                clean_html_source(resp.text), "html.parser")
+            candidate_soup = BeautifulSoup(clean_html_source(resp.text), "html.parser")
             if candidate_soup.find("article", class_=re.compile(r"eventlist-event")):
                 soup = candidate_soup
                 logger.info(
-                    "[HTTP FAST-PATH] Loaded main Squarespace events listing via HTTP.")
+                    "[HTTP FAST-PATH] Loaded main Squarespace events listing via HTTP."
+                )
         except Exception as http_err:
             logger.warning(
-                f"HTTP listing fetch failed ({http_err}); falling back to Chrome...")
+                f"HTTP listing fetch failed ({http_err}); falling back to Chrome..."
+            )
 
         if soup is None:
             from selenium import webdriver
 
-            logger.info(
-                "Launching headless Chrome fallback for main listing...")
+            logger.info("Launching headless Chrome fallback for main listing...")
             driver = webdriver.Chrome(options=get_headless_chrome_options())
             soup = fetch_rendered_page(
                 driver,
@@ -255,9 +253,7 @@ def scraper() -> pd.DataFrame:
             return pd.DataFrame()
 
         target_section = (
-            soup.find("div", class_=re.compile(
-                r"eventlist--upcoming|eventlist"))
-            or soup
+            soup.find("div", class_=re.compile(r"eventlist--upcoming|eventlist")) or soup
         )
         for element in target_section(["script", "style"]):
             element.decompose()
@@ -269,6 +265,7 @@ def scraper() -> pd.DataFrame:
 
         # 2. Parse listing cards
         staged_items: List[Dict[str, Optional[str]]] = []
+        seen_keys: Set[str] = set()
         for event in event_items:
             title: Optional[str] = None
             external_url: Optional[str] = None
@@ -287,15 +284,18 @@ def scraper() -> pd.DataFrame:
             if not title:
                 continue
 
+            dedup_key = external_url or title.lower()
+            if dedup_key in seen_keys:
+                continue
+            seen_keys.add(dedup_key)
+
             start_times = extract_squarespace_dates(event)
 
             desc_div = event.find(
                 "div", class_=re.compile(r"sqs-html-content|eventlist-excerpt")
             )
             description = (
-                normalize_ws(desc_div.get_text(" ", strip=True))
-                if desc_div
-                else None
+                normalize_ws(desc_div.get_text(" ", strip=True)) if desc_div else None
             )
 
             img_tag = event.find("img", src=True) or event.find(
@@ -308,9 +308,7 @@ def scraper() -> pd.DataFrame:
             )
 
             address = DEFAULT_ADDRESS
-            addr_anchor = event.find(
-                "li", class_=re.compile(r"eventlist-meta-address")
-            )
+            addr_anchor = event.find("li", class_=re.compile(r"eventlist-meta-address"))
             if addr_anchor and addr_anchor.find("a", href=True):
                 address = parse_address_url(addr_anchor.find("a")["href"])
 
@@ -360,8 +358,7 @@ def scraper() -> pd.DataFrame:
             from selenium import webdriver
 
             if driver is None:
-                driver = webdriver.Chrome(
-                    options=get_headless_chrome_options())
+                driver = webdriver.Chrome(options=get_headless_chrome_options())
             for item in fallback_queue:
                 detail_url = item.get("external_url")
                 if detail_url:
@@ -379,8 +376,7 @@ def scraper() -> pd.DataFrame:
                         )
                         item["start_time"] = dates  # type: ignore[assignment]
                         item["big_desc"] = (
-                            big_desc or item.get(
-                                "description") or item.get("title")
+                            big_desc or item.get("description") or item.get("title")
                         )
                         item["ticket_link"] = ticket_link or detail_url
                 enriched_items.append(item)
@@ -389,15 +385,15 @@ def scraper() -> pd.DataFrame:
         for item in enriched_items:
             if not item.get("start_time"):
                 logger.warning(
-                    f"[SKIP] No valid dates parsed for '{item.get('title')}'.")
+                    f"[SKIP] No valid dates parsed for '{item.get('title')}'."
+                )
                 continue
             events_data.append(item)
 
         return pd.DataFrame(events_data) if events_data else pd.DataFrame()
 
     except Exception as e:
-        logger.error(
-            f"Error during The Valley Tacoma scraping loop: {e}", exc_info=True)
+        logger.error(f"Error during The Valley Tacoma scraping loop: {e}", exc_info=True)
         return pd.DataFrame()
     finally:
         if driver:
@@ -405,6 +401,7 @@ def scraper() -> pd.DataFrame:
                 driver.quit()
             except Exception:
                 pass
+        session.close()
 
 
 if __name__ == "__main__":
@@ -415,12 +412,8 @@ if __name__ == "__main__":
         pipeline = VividaIngestionPipeline(table_name="events")
         success = pipeline.run_standalone_pipeline(raw_df)
         if success:
-            logger.info(
-                "The Valley Tacoma scraper execution completed successfully."
-            )
+            logger.info("The Valley Tacoma scraper execution completed successfully.")
         else:
-            logger.error(
-                "The Valley Tacoma scraper pipeline execution reported errors."
-            )
+            logger.error("The Valley Tacoma scraper pipeline execution reported errors.")
     else:
         logger.warning("No events scraped. Exiting task.")

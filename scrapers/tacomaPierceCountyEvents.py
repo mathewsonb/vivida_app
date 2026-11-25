@@ -1,7 +1,7 @@
 """
 tacomaPierceCountyEvents.py
 Autonomous Scraper for Visit Tacoma / Pierce County Events Calendar (Simpleview Engine).
-Fetches initial event queue via Simpleview REST API (with dynamic token refresh & DOM fallback)
+Fetches initial event queue via Simpleview REST API (with dynamic token/API-key refresh & DOM fallback)
 and parses detail pages via concurrent HTTP batch requests, falling back to single-instance
 headless Chrome only for pages requiring JS rendering.
 """
@@ -9,6 +9,7 @@ headless Chrome only for pages requiring JS rendering.
 import concurrent.futures
 import json
 import logging
+import os
 import re
 import sys
 import threading
@@ -42,7 +43,9 @@ logger = logging.getLogger("scrape_tacoma_pierce_county")
 
 BASE_URL = "https://www.visitpiercecounty.com"
 EVENTS_INDEX_URL = f"{BASE_URL}/events/"
-FALLBACK_API_KEY = "94b39b66668508579a75de492ad8868d"
+FALLBACK_API_KEY = (
+    os.getenv("SIMPLEVIEW_API_KEY") or "8fc7af8cca14631dcf4dd6e30d58f7a9"
+).strip()
 DEFAULT_VENUE = "Tacoma / Pierce County"
 DEFAULT_ADDRESS = "Tacoma, WA"
 
@@ -55,6 +58,15 @@ DEFAULT_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Referer": EVENTS_INDEX_URL,
 }
+
+TOKEN_PATTERNS = [
+    r'token["\']?\s*[:=]\s*["\']([a-f0-9]{24,64})["\']',
+    r"[?&]token=([a-f0-9]{24,64})",
+    r'site_token["\']?\s*[:=]\s*["\']([a-f0-9]{24,64})["\']',
+    r'apiKey["\']?\s*[:=]\s*["\']([a-f0-9]{24,64})["\']',
+    r'api_key["\']?\s*[:=]\s*["\']([a-f0-9]{24,64})["\']',
+    r"/rest_v2/plugins_events_[^\"'\s?&]+/find/\?[^\"'\s]*?token=([a-zA-Z0-9_-]{16,64})",
+]
 
 _thread_local = threading.local()
 
@@ -71,8 +83,7 @@ def get_thread_session() -> requests.Session:
             status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=["GET"],
         )
-        adapter = HTTPAdapter(pool_connections=16,
-                              pool_maxsize=16, max_retries=retry)
+        adapter = HTTPAdapter(pool_connections=16, pool_maxsize=16, max_retries=retry)
         session.mount("https://", adapter)
         session.mount("http://", adapter)
         _thread_local.session = session
@@ -93,21 +104,52 @@ def normalize_url(raw_url: Optional[str]) -> Optional[str]:
     return f"{BASE_URL}{url if url.startswith('/') else '/' + url}"
 
 
+def _extract_token_from_text(blob: str) -> Optional[str]:
+    for pattern in TOKEN_PATTERNS:
+        match = re.search(pattern, blob, flags=re.IGNORECASE)
+        if match:
+            candidate = (match.group(1) or "").strip()
+            if candidate:
+                return candidate
+    return None
+
+
 def get_fresh_simpleview_token(session: requests.Session) -> str:
-    """Extracts a live Simpleview REST v2 session token from the public events page."""
+    """Extracts a live Simpleview REST v2 token/API key from public events HTML or scripts."""
+    if os.getenv("SIMPLEVIEW_API_KEY"):
+        return FALLBACK_API_KEY
+
     try:
         resp = session.get(EVENTS_INDEX_URL, timeout=15)
-        if resp.status_code == 200:
-            for pattern in [
-                r'token["\']?\s*[:=]\s*["\']([a-f0-9]{32})["\']',
-                r"token=([a-f0-9]{32})",
-                r'site_token["\']?\s*[:=]\s*["\']([a-f0-9]{32})["\']',
-            ]:
-                m = re.search(pattern, resp.text, flags=re.IGNORECASE)
-                if m:
-                    logger.info(
-                        "Acquired fresh Simpleview REST v2 token from page.")
-                    return m.group(1)
+        if resp.status_code == 200 and resp.text:
+            token = _extract_token_from_text(resp.text)
+            if token:
+                logger.info("Acquired fresh Simpleview REST v2 token from events page.")
+                return token
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+            script_srcs: List[str] = []
+            for script in soup.find_all("script", src=True):
+                src_url = normalize_url(script.get("src"))
+                if src_url and any(
+                    k in src_url.lower()
+                    for k in ("simpleview", "event", "calendar", "app", "bundle", "main")
+                ):
+                    if src_url not in script_srcs:
+                        script_srcs.append(src_url)
+
+            for script_url in script_srcs[:4]:
+                try:
+                    s_resp = session.get(script_url, timeout=10)
+                    if s_resp.status_code == 200 and s_resp.text:
+                        token = _extract_token_from_text(s_resp.text)
+                        if token:
+                            logger.info(
+                                f"Acquired fresh Simpleview REST v2 token from script: {script_url}"
+                            )
+                            return token
+                except Exception:
+                    continue
     except Exception as e:
         logger.warning(f"Could not refresh Simpleview token dynamically: {e}")
     return FALLBACK_API_KEY
@@ -121,8 +163,9 @@ def fetch_http_page(url: str, timeout: int = 12) -> Optional[BeautifulSoup]:
         if resp.status_code != 200 or not resp.text:
             return None
         soup = BeautifulSoup(clean_html_source(resp.text), "html.parser")
-        # Verify core Simpleview content container rendered in static HTML
-        if soup.find("div", id="main-content") or soup.find("div", class_=re.compile(r"info-section")):
+        if soup.find("div", id="main-content") or soup.find(
+            "div", class_=re.compile(r"info-section")
+        ):
             return soup
         return None
     except Exception:
@@ -141,8 +184,7 @@ def fetch_rendered_page(
         if wait_selector:
             try:
                 WebDriverWait(driver, timeout).until(
-                    EC.presence_of_element_located(
-                        (By.CSS_SELECTOR, wait_selector))
+                    EC.presence_of_element_located((By.CSS_SELECTOR, wait_selector))
                 )
             except Exception:
                 pass
@@ -199,7 +241,6 @@ def parse_detail_soup(
     main_content = det_soup.find("div", id="main-content") or det_soup
     info_sec = main_content.find("div", class_=re.compile(r"info-section"))
 
-    # Title (DOM first, API fallback)
     title: Optional[str] = None
     if info_sec:
         h1_tag = info_sec.find("h1")
@@ -210,7 +251,6 @@ def parse_detail_soup(
     if not title:
         return None
 
-    # Date parsing via centralized parse_event_dates + API fallback
     start_times: List[str] = []
     if info_sec:
         dd_list = info_sec.find_all("dd")
@@ -221,8 +261,7 @@ def parse_detail_soup(
                 else dd_list[0].get_text(" ", strip=True)
             )
             recur_hint = primary_doc.get("recurType")
-            start_times = parse_event_dates(
-                raw_dates_str, frequency=recur_hint)
+            start_times = parse_event_dates(raw_dates_str, frequency=recur_hint)
 
     api_dates = extract_api_fallback_dates(api_group)
     if api_dates:
@@ -233,7 +272,6 @@ def parse_detail_soup(
         logger.warning(f"[SKIP] No valid dates parsed for '{title}' ({url}).")
         return None
 
-    # Venue Name parsing (DOM -> API listing -> API location -> title split -> default)
     venue_name = DEFAULT_VENUE
     two_line = main_content.find("div", class_=re.compile(r"two-line-wrap"))
     if two_line and two_line.find("a"):
@@ -247,7 +285,6 @@ def parse_detail_soup(
         if len(split_parts) > 1 and split_parts[1].strip():
             venue_name = split_parts[1].strip()
 
-    # Address parsing
     address = DEFAULT_ADDRESS
     if two_line:
         spans = two_line.find_all("span")
@@ -260,25 +297,20 @@ def parse_detail_soup(
         city = str(primary_doc["city"]).strip()
         address = f"{city}, WA" if city else DEFAULT_ADDRESS
 
-    # Short Description
-    desc_tab = main_content.find(
-        "div", id="descriptionTab"
-    ) or main_content.find("div", class_=re.compile(r"description"))
+    desc_tab = main_content.find("div", id="descriptionTab") or main_content.find(
+        "div", class_=re.compile(r"description")
+    )
     description = (
         re.sub(r"\s+", " ", desc_tab.get_text(strip=True, separator=" "))
         if desc_tab
         else None
     )
 
-    # Rich Expanded Description
     rich_text = fetch_event_text(main_content)
     big_desc = (
-        re.sub(r"\s+", " ", rich_text)
-        if rich_text
-        else (description or title)
+        re.sub(r"\s+", " ", rich_text) if rich_text else (description or title)
     )
 
-    # Image URL
     image_url: Optional[str] = None
     img_tag = main_content.find(
         "img", class_=re.compile(r"slide-img|loaded")
@@ -292,10 +324,8 @@ def parse_detail_soup(
             if isinstance(first_media, dict):
                 image_url = normalize_url(first_media.get("mediaurl"))
 
-    # Ticket Link
     ticket_link: Optional[str] = None
-    actions_div = main_content.find(
-        "div", class_=re.compile(r"bottom-actions"))
+    actions_div = main_content.find("div", class_=re.compile(r"bottom-actions"))
     if actions_div and actions_div.find("a", href=True):
         ticket_link = normalize_url(actions_div.find("a")["href"])
 
@@ -406,8 +436,7 @@ def scraper(days_ahead: int = 30, max_workers: int = 10) -> pd.DataFrame:
             f"Simpleview REST API index failed ({e}); will fall back to HTML index."
         )
 
-    logger.info(
-        f"Retrieved {len(docs)} valid event records from REST API index.")
+    logger.info(f"Retrieved {len(docs)} valid event records from REST API index.")
 
     docs_by_url: Dict[str, List[Dict[str, Any]]] = {}
     for doc in docs:
@@ -417,10 +446,10 @@ def scraper(days_ahead: int = 30, max_workers: int = 10) -> pd.DataFrame:
 
     driver = None
     try:
-        # Fallback: only spin up Chrome early if REST API yielded 0 URLs
         if not docs_by_url:
             logger.info(
-                "Falling back to rendered /events/ index page to discover event URLs...")
+                "Falling back to rendered /events/ index page to discover event URLs..."
+            )
             driver = webdriver.Chrome(options=get_headless_chrome_options())
             index_soup = fetch_rendered_page(
                 driver, EVENTS_INDEX_URL, wait_selector="a[href*='/event/']"
@@ -458,11 +487,9 @@ def scraper(days_ahead: int = 30, max_workers: int = 10) -> pd.DataFrame:
             f"HTTP batch complete: {len(events_by_url)} parsed, {len(fallback_urls)} queued for Selenium fallback."
         )
 
-        # Lazy Selenium fallback only for URLs that failed static HTTP retrieval
         if fallback_urls:
             if driver is None:
-                driver = webdriver.Chrome(
-                    options=get_headless_chrome_options())
+                driver = webdriver.Chrome(options=get_headless_chrome_options())
             for url in fallback_urls:
                 det_soup = fetch_rendered_page(
                     driver, url, wait_selector="#main-content, div.info-section"
@@ -489,6 +516,7 @@ def scraper(days_ahead: int = 30, max_workers: int = 10) -> pd.DataFrame:
                 driver.quit()
             except Exception:
                 pass
+        session.close()
 
 
 if __name__ == "__main__":

@@ -4,15 +4,52 @@ Master ETL Orchestrator & Test Execution Suite for Vivida Event Aggregation.
 Runs all 23 registered venue scrapers, collects metric telemetry, and executes
 idempotent upserts directly into Supabase via vivida_etl.
 """
-
 import argparse
 import gc
 import importlib
 import logging
 import os
+from pathlib import Path
 import sys
 import time
 from typing import Any, Dict, List, Optional
+
+# ensure local modules are loaded when running locally
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+def load_vivida_env() -> List[str]:
+    """Load env vars with precedence: existing OS/Codespace secrets > .env.local > .env."""
+    repo_root = Path(__file__).resolve().parent.parent
+    loaded_files: List[str] = []
+
+    for filename in (".env.local", ".env"):
+        env_path = repo_root / filename
+        if not env_path.is_file():
+            continue
+
+        try:
+            from dotenv import load_dotenv
+
+            # override=False ensures Codespaces/GitHub Actions secrets take precedence
+            load_dotenv(dotenv_path=env_path, override=False)
+        except ImportError:
+            # Built-in fallback parser so .env.local works even without python-dotenv
+            for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                os.environ.setdefault(key, val)
+
+        loaded_files.append(str(env_path))
+
+    return loaded_files
+
+LOADED_ENV_FILES = load_vivida_env()
 
 import pandas as pd
 
@@ -89,7 +126,7 @@ def run_pipeline_test(
     )
     start_time = time.time()
 
-    pipeline = VividaIngestionPipeline(table_name="events")
+    pipeline = None if dry_run else VividaIngestionPipeline(table_name="events")
     summary_results: List[Dict[str, Any]] = []
     total_events_extracted = 0
     total_events_upserted = 0
@@ -181,10 +218,10 @@ def run_pipeline_test(
         "failed_scrapers": failed_scrapers,
     }
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Vivida Master ETL Pipeline Runner")
+        description="Vivida Master ETL Pipeline Runner"
+    )
     parser.add_argument(
         "--only",
         nargs="+",
@@ -202,30 +239,31 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    try:
-        from dotenv import load_dotenv
+    if LOADED_ENV_FILES:
+        logger.info(f"Loaded local env fallback file(s): {', '.join(LOADED_ENV_FILES)}")
 
-        load_dotenv()
-    except Exception:
-        pass
-
-    supabase_url = os.environ.get(
-        "VITE_SUPABASE_URL") or os.environ.get("SUPABASE_URL")
+    supabase_url = os.environ.get("VITE_SUPABASE_URL") or os.environ.get("SUPABASE_URL")
     supabase_key = (
         os.environ.get("VITE_SUPABASE_SERVICE_KEY")
         or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
         or os.environ.get("SUPABASE_KEY")
     )
+    gemini_key = os.environ.get("VITE_GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
 
+    effective_dry_run = args.dry_run
     if not supabase_url or not supabase_key:
         logger.warning(
-            "Supabase credentials missing from environment. "
-            "Pipeline will execute extraction logic, but database upserts will run in fallback/dry-run mode."
+            "Supabase credentials missing from environment and .env.local. "
+            "Switching to --dry-run mode (extraction only; skipping Supabase upserts)."
         )
+        effective_dry_run = True
+
+    if not gemini_key:
+        logger.info("Gemini API key not set in env/.env.local (local Ollama enrichment will be used if configured).")
 
     results = run_pipeline_test(
         only_filter=args.only,
         skip_filter=args.skip,
-        dry_run=args.dry_run,
+        dry_run=effective_dry_run,
     )
     sys.exit(1 if results["failed_scrapers"] else 0)

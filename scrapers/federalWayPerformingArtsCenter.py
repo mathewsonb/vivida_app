@@ -2,14 +2,12 @@
 federalWayPerformingArtsCenter.py
 Autonomous Production Scraper for Federal Way Performing Arts and Event Center (FWPAEC).
 Uses HTTP-first MEC calendar listing + concurrent detail fetching (workers=10)
-with lazy Xvfb/Chrome hydration fallback and centralized parse_event_dates normalization.
+with lazy cross-platform browser hydration fallback and centralized parse_event_dates normalization.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import glob
 import logging
 import re
-import shutil
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,9 +21,10 @@ from urllib3.util.retry import Retry
 from vivida_etl import (
     VividaIngestionPipeline,
     clean_html_source,
+    create_stealth_driver,
     fetch_event_text,
     parse_event_dates,
-    create_stealth_driver
+    virtual_display,
 )
 
 logging.basicConfig(
@@ -99,6 +98,15 @@ def normalize_mec_group_key(detail_url: Optional[str], title: str) -> str:
     return title.lower()
 
 
+def extract_mec_cards(soup: BeautifulSoup) -> List[BeautifulSoup]:
+    articles = soup.find_all("article", class_=re.compile(r"mec-event-article", re.I))
+    if articles:
+        return articles
+    return soup.find_all(
+        ["div", "article"], class_=re.compile(r"mec-event-item|mec-event-grid-item", re.I)
+    )
+
+
 def parse_detail_page_html(
     html_content: str,
     card_title: Optional[str],
@@ -112,8 +120,11 @@ def parse_detail_page_html(
     root = container if container else soup
 
     title_el = root.find("h1", class_="mec-single-title")
-    title = normalize_ws(title_el.get_text(" ", strip=True)
-                         ) if title_el else (card_title or "")
+    title = (
+        normalize_ws(title_el.get_text(" ", strip=True))
+        if title_el
+        else (card_title or "")
+    )
 
     # Extract start & optional end date labels (MEC often includes the year already)
     start_el = root.find("span", class_="mec-start-date-label")
@@ -122,8 +133,11 @@ def parse_detail_page_html(
 
     if start_el:
         s_txt = normalize_ws(start_el.get_text(" ", strip=True))
-        e_txt = normalize_ws(end_el.get_text(" ", strip=True)).lstrip(
-            "-–— ") if end_el else ""
+        e_txt = (
+            normalize_ws(end_el.get_text(" ", strip=True)).lstrip("-–— ")
+            if end_el
+            else ""
+        )
         expr = f"{s_txt} - {e_txt}" if e_txt and e_txt != s_txt else s_txt
         dates = parse_event_dates(expr)
 
@@ -149,25 +163,24 @@ def parse_detail_page_html(
         if og_img and og_img.get("content"):
             image_url = resolve_url(og_img["content"])
     if not image_url:
-        hero_img = root.find("div", class_=re.compile(
-            r"mec-events-event-image", re.I))
+        hero_img = root.find("div", class_=re.compile(r"mec-events-event-image", re.I))
         if hero_img:
             img_tag = hero_img.find("img")
             if img_tag:
-                image_url = resolve_url(
-                    img_tag.get("data-src") or img_tag.get("src")
-                )
+                image_url = resolve_url(img_tag.get("data-src") or img_tag.get("src"))
 
     # Description Locators
-    desc_el = root.find("div", class_=re.compile(
-        r"mec-single-event-description", re.I))
+    desc_el = root.find("div", class_=re.compile(r"mec-single-event-description", re.I))
     short_desc: Optional[str] = None
     big_desc: Optional[str] = None
 
     if desc_el:
         rich_text = fetch_event_text(desc_el)
-        big_desc = normalize_ws(rich_text) if rich_text else normalize_ws(
-            desc_el.get_text(" ", strip=True))
+        big_desc = (
+            normalize_ws(rich_text)
+            if rich_text
+            else normalize_ws(desc_el.get_text(" ", strip=True))
+        )
         p_tags = desc_el.find_all("p")
         for p in p_tags:
             txt = normalize_ws(p.get_text(" ", strip=True))
@@ -221,18 +234,18 @@ def scraper() -> pd.DataFrame:
     logger.info(f"[START] Scraping Federal Way PAEC: {TARGET_URL}")
     session = build_http_session(pool_size=12)
 
-    display = None
+    disp_ctx = None
+    active_disp = None
     driver = None
     event_articles: List[BeautifulSoup] = []
 
     def ensure_browser():
-        nonlocal display, driver
+        nonlocal disp_ctx, active_disp, driver
+        if disp_ctx is None:
+            disp_ctx = virtual_display(size=(1920, 1080))
+            active_disp = disp_ctx.__enter__()
         if driver is None:
-            from pyvirtualdisplay import Display
-
-            display = Display(visible=0, size=(1920, 1080), backend="xvfb")
-            display.start()
-            driver = create_stealth_driver()
+            driver = create_stealth_driver(headless=(active_disp is None))
         return driver
 
     try:
@@ -240,11 +253,8 @@ def scraper() -> pd.DataFrame:
         try:
             resp = session.get(TARGET_URL, timeout=15)
             resp.raise_for_status()
-            soup_http = BeautifulSoup(
-                clean_html_source(resp.text), "html.parser")
-            candidates = soup_http.find_all(
-                "article", class_=re.compile(r"mec-event-article", re.I)
-            )
+            soup_http = BeautifulSoup(clean_html_source(resp.text), "html.parser")
+            candidates = extract_mec_cards(soup_http)
             if candidates:
                 event_articles = candidates
                 logger.info(
@@ -252,26 +262,39 @@ def scraper() -> pd.DataFrame:
                 )
             else:
                 logger.info(
-                    "[HTTP LISTING] Page shell loaded with 0 static event articles; launching Xvfb + Chrome..."
+                    "[HTTP LISTING] Page shell loaded with 0 static event articles; launching browser fallback..."
                 )
         except Exception as http_err:
             logger.warning(
-                f"[HTTP LISTING] Failed ({http_err}); launching Xvfb + Chrome fallback..."
+                f"[HTTP LISTING] Failed ({http_err}); launching browser fallback..."
             )
 
         if not event_articles:
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support import expected_conditions as EC
+            from selenium.webdriver.support.ui import WebDriverWait
+
             drv = ensure_browser()
             drv.get(TARGET_URL)
-            time.sleep(4)
-            drv.execute_script(
-                "window.scrollTo(0, document.body.scrollHeight / 2);")
+            try:
+                WebDriverWait(drv, 10).until(
+                    EC.presence_of_element_located(
+                        (
+                            By.CSS_SELECTOR,
+                            "article.mec-event-article, .mec-event-item, .mec-calendar",
+                        )
+                    )
+                )
+            except Exception:
+                pass
+            time.sleep(3)
+            drv.execute_script("window.scrollTo(0, document.body.scrollHeight / 2);")
             time.sleep(1.5)
 
             soup_browser = BeautifulSoup(
-                clean_html_source(drv.page_source), "html.parser")
-            event_articles = soup_browser.find_all(
-                "article", class_=re.compile(r"mec-event-article", re.I)
+                clean_html_source(drv.page_source), "html.parser"
             )
+            event_articles = extract_mec_cards(soup_browser)
 
             ua = drv.execute_script("return navigator.userAgent;")
             if ua:
@@ -285,8 +308,7 @@ def scraper() -> pd.DataFrame:
                 )
 
         if not event_articles:
-            logger.warning(
-                "[PARSER WARNING] Found 0 articles matching class 'mec-event-article'.")
+            logger.warning("[PARSER WARNING] Found 0 MEC event articles.")
             return pd.DataFrame()
 
         logger.info(
@@ -296,28 +318,31 @@ def scraper() -> pd.DataFrame:
         # 2. Extract card metadata
         staged_items: List[Dict[str, Any]] = []
         for idx, article in enumerate(event_articles, start=1):
-            title_el = article.find("h4", class_="mec-event-title")
-            link_tag = title_el.find("a", href=True) if title_el else None
+            title_el = article.find(["h4", "h3", "h2"], class_=re.compile(r"mec-event-title", re.I)) or article.find(["h4", "h3", "h2"])
+            link_tag = title_el.find("a", href=True) if title_el else article.find("a", href=True)
 
-            card_title = normalize_ws(link_tag.get_text(
-                " ", strip=True)) if link_tag else ""
-            detail_url = resolve_url(
-                link_tag.get("href")) if link_tag else None
+            card_title = (
+                normalize_ws(link_tag.get_text(" ", strip=True))
+                if link_tag
+                else (normalize_ws(title_el.get_text(" ", strip=True)) if title_el else "")
+            )
+            detail_url = resolve_url(link_tag.get("href")) if link_tag else None
 
             if not detail_url:
-                booking_btn = article.find("a", class_=re.compile(
-                    r"mec-booking-button", re.I), href=True)
+                booking_btn = article.find(
+                    "a", class_=re.compile(r"mec-booking-button", re.I), href=True
+                )
                 if booking_btn:
                     detail_url = resolve_url(booking_btn.get("href"))
 
             if not detail_url:
-                logger.warning(
-                    f"[ITEM SKIP] Event {idx}: No detail URL found.")
+                logger.warning(f"[ITEM SKIP] Event {idx}: No detail URL found.")
                 continue
 
             month_el = article.find("div", class_="mec-event-month")
-            card_date_str = normalize_ws(month_el.get_text(
-                " ", strip=True)) if month_el else None
+            card_date_str = (
+                normalize_ws(month_el.get_text(" ", strip=True)) if month_el else None
+            )
 
             venue_el = article.find("div", class_="mec-event-loc-place")
             card_venue = (
@@ -345,7 +370,9 @@ def scraper() -> pd.DataFrame:
                     "venue_name": card_venue,
                     "address": card_address,
                     "title": card_title,
-                    "start_time": parse_event_dates(card_date_str) if card_date_str else [],
+                    "start_time": (
+                        parse_event_dates(card_date_str) if card_date_str else []
+                    ),
                     "_card_date_str": card_date_str,
                     "description": card_title,
                     "big_desc": card_title,
@@ -428,7 +455,9 @@ def scraper() -> pd.DataFrame:
 
     except Exception as e:
         logger.error(
-            f"[FATAL ERROR] Exception encountered during scraping loop: {e}", exc_info=True)
+            f"[FATAL ERROR] Exception encountered during scraping loop: {e}",
+            exc_info=True,
+        )
         return pd.DataFrame()
     finally:
         if driver:
@@ -437,10 +466,10 @@ def scraper() -> pd.DataFrame:
                 driver.quit()
             except Exception:
                 pass
-        if display:
-            logger.info("[CLEANUP] Stopping PyVirtualDisplay server...")
+        if disp_ctx is not None:
+            logger.info("[CLEANUP] Stopping virtual display context...")
             try:
-                display.stop()
+                disp_ctx.__exit__(None, None, None)
             except Exception:
                 pass
 
@@ -455,9 +484,11 @@ if __name__ == "__main__":
 
         if success:
             logger.info(
-                "[PIPELINE SUCCESS] FWPAEC scraper pipeline execution completed successfully.")
+                "[PIPELINE SUCCESS] FWPAEC scraper pipeline execution completed successfully."
+            )
         else:
             logger.error(
-                "[PIPELINE ERROR] FWPAEC scraper pipeline execution reported errors.")
+                "[PIPELINE ERROR] FWPAEC scraper pipeline execution reported errors."
+            )
     else:
         logger.warning("[EXIT] No events scraped. Pipeline handoff skipped.")

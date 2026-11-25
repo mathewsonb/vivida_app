@@ -1,5 +1,5 @@
 """Vivida ETL Package Initialization."""
-
+from .display_helper import virtual_display
 from .vivida_etl_helpers import (
     clean_html_source,
     fetch_event_text,
@@ -23,4 +23,6 @@ __all__ = [
     "expand_recurring_dates",
     "parse_event_dates",
     "VividaIngestionPipeline",
+    "create_stealth_driver",
+    "virtual_display",
 ]

@@ -1,15 +1,13 @@
 """
 tacomaTheaters.py
 Autonomous Production Scraper for Tacoma City Theaters (Pantages, Rialto, Theatre on the Square).
-Uses HTTP-first listing & concurrent detail-page fetching (workers=10), with lazy Xvfb/Chrome
+Uses HTTP-first listing & concurrent detail-page fetching (workers=10), with lazy browser
 pagination fallback for "Load More" unfolding.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import glob
 import logging
 import re
-import shutil
 import sys
 import time
 from typing import Dict, List, Optional, Set, Tuple
@@ -23,9 +21,10 @@ from urllib3.util.retry import Retry
 from vivida_etl import (
     VividaIngestionPipeline,
     clean_html_source,
+    create_stealth_driver,
     fetch_event_text,
     parse_event_dates,
-    create_stealth_driver
+    virtual_display,
 )
 
 logging.basicConfig(
@@ -102,7 +101,7 @@ def build_http_session(pool_size: int = 12) -> requests.Session:
 
 def fetch_unfolded_listing_html(session: requests.Session) -> str:
     """
-    Tries fast HTTP fetch first; falls back to Xvfb + undetected Chrome only if
+    Tries fast HTTP fetch first; falls back to browser automation only if
     the page requires JS rendering or has an active 'Load More' pagination button.
     """
     try:
@@ -121,70 +120,71 @@ def fetch_unfolded_listing_html(session: requests.Session) -> str:
             return html
         logger.info(
             f"[LISTING] Initial HTTP fetch found {len(cards)} cards with Load More pagination; "
-            "launching Xvfb + Chrome to unfold full listing..."
+            "launching browser to unfold full listing..."
         )
     except Exception as http_err:
         logger.warning(
-            f"[LISTING] HTTP listing fetch failed ({http_err}); falling back to Chrome..."
+            f"[LISTING] HTTP listing fetch failed ({http_err}); falling back to browser..."
         )
 
-    from pyvirtualdisplay import Display
     from selenium.webdriver.common.by import By
 
-    display = Display(visible=0, size=(1920, 1080), backend="xvfb")
-    display.start()
     driver = None
+    with virtual_display(size=(1920, 1080)) as disp:
+        try:
+            driver = create_stealth_driver(headless=(disp is None))
+            driver.get(TARGET_URL)
+            time.sleep(5)
 
-    try:
-        driver = create_stealth_driver()
-        driver.get(TARGET_URL)
-        time.sleep(5)
+            load_clicks = 0
+            while True:
+                try:
+                    buttons = driver.find_elements(By.ID, "loadMoreEvents")
+                    if not buttons:
+                        buttons = driver.find_elements(
+                            By.CSS_SELECTOR,
+                            "a.loadMore, button.loadMore, a.btn-load-more",
+                        )
 
-        load_clicks = 0
-        while True:
-            try:
-                buttons = driver.find_elements(By.ID, "loadMoreEvents")
-                if not buttons:
-                    buttons = driver.find_elements(
-                        By.CSS_SELECTOR, "a.loadMore, button.loadMore, a.btn-load-more"
-                    )
-
-                if buttons and buttons[0].is_displayed() and buttons[0].is_enabled():
-                    btn = buttons[0]
-                    driver.execute_script(
-                        "arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});",
-                        btn,
-                    )
-                    time.sleep(0.5)
-                    driver.execute_script("arguments[0].click();", btn)
-                    load_clicks += 1
+                    if buttons and buttons[0].is_displayed() and buttons[0].is_enabled():
+                        btn = buttons[0]
+                        driver.execute_script(
+                            "arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});",
+                            btn,
+                        )
+                        time.sleep(0.5)
+                        driver.execute_script("arguments[0].click();", btn)
+                        load_clicks += 1
+                        logger.info(
+                            f"[PAGINATION] Clicked 'Load More' button (click #{load_clicks})..."
+                        )
+                        time.sleep(2.5)
+                    else:
+                        logger.info(
+                            f"[PAGINATION COMPLETE] All events unfolded. Total clicks: {load_clicks}."
+                        )
+                        break
+                except Exception as nav_err:
                     logger.info(
-                        f"[PAGINATION] Clicked 'Load More' button (click #{load_clicks})..."
-                    )
-                    time.sleep(2.5)
-                else:
-                    logger.info(
-                        f"[PAGINATION COMPLETE] All events unfolded. Total clicks: {load_clicks}."
+                        f"[PAGINATION END] Pagination stopped after {load_clicks} clicks: {nav_err}"
                     )
                     break
-            except Exception as nav_err:
-                logger.info(
-                    f"[PAGINATION END] Pagination stopped after {load_clicks} clicks: {nav_err}"
-                )
-                break
 
-        return driver.page_source
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
-        display.stop()
+            return driver.page_source
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
 
 
 def parse_detail_html(
-    html: str, current_dates: List[str], current_desc: str, current_ticket: Optional[str], detail_url: str
+    html: str,
+    current_dates: List[str],
+    current_desc: str,
+    current_ticket: Optional[str],
+    detail_url: str,
 ) -> Tuple[List[str], str, Optional[str]]:
     """Extracts fallback dates, rich description text, and ticket link from detail HTML."""
     det_soup = BeautifulSoup(clean_html_source(html), "html.parser")
@@ -195,8 +195,9 @@ def parse_detail_html(
     if not dates:
         det_date_el = det_soup.select_one("div.date") or det_soup.find("time")
         if det_date_el:
-            dates = parse_event_dates(normalize_ws(
-                det_date_el.get_text(" ", strip=True)))
+            dates = parse_event_dates(
+                normalize_ws(det_date_el.get_text(" ", strip=True))
+            )
 
     container = (
         det_soup.select_one("div.leftColumn")
@@ -254,196 +255,201 @@ def scraper() -> pd.DataFrame:
     session = build_http_session(pool_size=12)
 
     try:
-        raw_listing_html = fetch_unfolded_listing_html(session)
-    except Exception as e:
-        logger.error(
-            f"[FATAL ERROR] Could not load Tacoma City Theaters listing: {e}", exc_info=True)
-        return pd.DataFrame()
-
-    main_html = clean_html_source(raw_listing_html)
-    soup = BeautifulSoup(main_html, "html.parser")
-
-    target_section = (
-        soup.find("div", class_="eventList event_list_grid event_list is-loaded")
-        or soup
-    )
-    for element in target_section(["script", "style"]):
-        element.decompose()
-
-    event_items = target_section.select("div.eventItem")
-    if not event_items:
-        event_items = target_section.find_all(
-            "div", class_=re.compile(r"^eventItem entry", re.I)
-        )
-
-    logger.info(
-        f"[PARSER SUCCESS] Found {len(event_items)} unfolded Tacoma City Theaters event cards."
-    )
-
-    staged_items: List[Dict[str, Optional[str]]] = []
-    seen_urls: Set[str] = set()
-
-    for idx, event in enumerate(event_items, start=1):
         try:
-            title_el = (
-                event.select_one("h3.title a")
-                or event.select_one("h3 a")
-                or event.find("h3")
-            )
-            if not title_el:
-                continue
-
-            card_title = normalize_ws(title_el.get_text(" ", strip=True))
-            if not card_title:
-                continue
-
-            href = (
-                title_el.get("href", "").strip()
-                if title_el.name == "a"
-                else ""
-            )
-            if not href:
-                anchor = event.find("a", href=True)
-                href = anchor["href"].strip() if anchor else ""
-
-            detail_url = resolve_url(href)
-
-            dedup_key = detail_url or card_title.lower()
-            if dedup_key in seen_urls:
-                continue
-            seen_urls.add(dedup_key)
-
-            loc_el = event.select_one("div.location")
-            venue_name = normalize_ws(loc_el.get_text(
-                " ", strip=True)) if loc_el else ""
-            if not venue_name:
-                logo_el = event.select_one("a.venue_logo")
-                venue_name = (
-                    normalize_ws(logo_el.get("title", ""))
-                    if logo_el and logo_el.get("title")
-                    else DEFAULT_VENUE
-                )
-
-            date_el = event.select_one("div.date")
-            raw_date_str = normalize_ws(date_el.get_text(
-                " ", strip=True)) if date_el else ""
-            start_time_seq = parse_event_dates(
-                raw_date_str) if raw_date_str else []
-
-            tagline_el = event.select_one("h4.tagline")
-            description = (
-                normalize_ws(tagline_el.get_text(" ", strip=True))
-                if tagline_el
-                else card_title
-            )
-
-            img_el = event.select_one(
-                "div.thumb img") or event.find("img", src=True)
-            image_url = resolve_url(img_el.get("src")) if img_el else None
-
-            ticket_el = event.select_one("a.tickets") or event.find(
-                "a", href=re.compile(r"ticket|buy|bit\.ly", re.IGNORECASE)
-            )
-            ticket_link = (
-                resolve_url(ticket_el.get("href"))
-                if ticket_el and ticket_el.get("href")
-                else detail_url
-            )
-
-            staged_items.append(
-                {
-                    "venue_name": venue_name,
-                    "address": resolve_venue_address(venue_name),
-                    "title": card_title,
-                    "start_time": start_time_seq,  # type: ignore[dict-item]
-                    "raw_date_str": raw_date_str,
-                    "description": description or card_title,
-                    "big_desc": description or card_title,
-                    "external_url": detail_url,
-                    "image_url": image_url,
-                    "ticket_link": ticket_link,
-                }
-            )
-        except Exception as item_err:
+            raw_listing_html = fetch_unfolded_listing_html(session)
+        except Exception as e:
             logger.error(
-                f"[ITEM ERROR] Failed parsing card #{idx}: {item_err}",
+                f"[FATAL ERROR] Could not load Tacoma City Theaters listing: {e}",
                 exc_info=True,
             )
+            return pd.DataFrame()
 
-    if not staged_items:
-        return pd.DataFrame()
+        main_html = clean_html_source(raw_listing_html)
+        soup = BeautifulSoup(main_html, "html.parser")
 
-    # Batch-fetch all detail pages concurrently via HTTP (workers=10)
-    logger.info(
-        f"Batch-fetching {len(staged_items)} event detail pages via HTTP (workers=10)...")
-    enriched_items: List[Dict[str, Optional[str]]] = []
-    fallback_queue: List[Dict[str, Optional[str]]] = []
+        target_section = (
+            soup.find("div", class_="eventList event_list_grid event_list is-loaded")
+            or soup
+        )
+        for element in target_section(["script", "style"]):
+            element.decompose()
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [
-            executor.submit(fetch_detail_via_http, session, item)
-            for item in staged_items
-        ]
-        for fut in as_completed(futures):
-            updated_item, ok = fut.result()
-            if ok:
-                enriched_items.append(updated_item)
-            else:
-                fallback_queue.append(updated_item)
-
-    logger.info(
-        f"HTTP detail batch complete: {len(enriched_items)} parsed, "
-        f"{len(fallback_queue)} queued for Selenium fallback."
-    )
-
-    # Lazy Selenium fallback ONLY for detail pages that failed HTTP
-    if fallback_queue:
-        from pyvirtualdisplay import Display
-
-        display = Display(visible=0, size=(1920, 1080), backend="xvfb")
-        display.start()
-        driver = None
-        try:
-            driver = create_stealth_driver()
-            for item in fallback_queue:
-                detail_url = item.get("external_url")
-                if detail_url:
-                    try:
-                        driver.get(detail_url)
-                        time.sleep(2.5)
-                        dates, big_desc, ticket_link = parse_detail_html(
-                            driver.page_source,
-                            item["start_time"],  # type: ignore[arg-type]
-                            item["big_desc"] or item["description"] or "",
-                            item.get("ticket_link"),
-                            detail_url,
-                        )
-                        item["start_time"] = dates  # type: ignore[assignment]
-                        item["big_desc"] = big_desc
-                        item["ticket_link"] = ticket_link
-                    except Exception as fb_err:
-                        logger.warning(
-                            f"[FALLBACK WARN] Failed {detail_url}: {fb_err}")
-                enriched_items.append(item)
-        finally:
-            if driver:
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
-            display.stop()
-
-    raw_records = []
-    for item in enriched_items:
-        if not item.get("start_time"):
-            logger.warning(
-                f"[SKIP] No valid dates parsed for '{item.get('title')}' (raw='{item.get('raw_date_str')}')"
+        event_items = target_section.select("div.eventItem")
+        if not event_items:
+            event_items = target_section.find_all(
+                "div", class_=re.compile(r"^eventItem entry", re.I)
             )
-            continue
-        item.pop("raw_date_str", None)
-        raw_records.append(item)
 
-    return pd.DataFrame(raw_records) if raw_records else pd.DataFrame()
+        logger.info(
+            f"[PARSER SUCCESS] Found {len(event_items)} unfolded Tacoma City Theaters event cards."
+        )
+
+        staged_items: List[Dict[str, Optional[str]]] = []
+        seen_urls: Set[str] = set()
+
+        for idx, event in enumerate(event_items, start=1):
+            try:
+                title_el = (
+                    event.select_one("h3.title a")
+                    or event.select_one("h3 a")
+                    or event.find("h3")
+                )
+                if not title_el:
+                    continue
+
+                card_title = normalize_ws(title_el.get_text(" ", strip=True))
+                if not card_title:
+                    continue
+
+                href = (
+                    title_el.get("href", "").strip()
+                    if title_el.name == "a"
+                    else ""
+                )
+                if not href:
+                    anchor = event.find("a", href=True)
+                    href = anchor["href"].strip() if anchor else ""
+
+                detail_url = resolve_url(href)
+
+                dedup_key = detail_url or card_title.lower()
+                if dedup_key in seen_urls:
+                    continue
+                seen_urls.add(dedup_key)
+
+                loc_el = event.select_one("div.location")
+                venue_name = (
+                    normalize_ws(loc_el.get_text(" ", strip=True)) if loc_el else ""
+                )
+                if not venue_name:
+                    logo_el = event.select_one("a.venue_logo")
+                    venue_name = (
+                        normalize_ws(logo_el.get("title", ""))
+                        if logo_el and logo_el.get("title")
+                        else DEFAULT_VENUE
+                    )
+
+                date_el = event.select_one("div.date")
+                raw_date_str = (
+                    normalize_ws(date_el.get_text(" ", strip=True)) if date_el else ""
+                )
+                start_time_seq = (
+                    parse_event_dates(raw_date_str) if raw_date_str else []
+                )
+
+                tagline_el = event.select_one("h4.tagline")
+                description = (
+                    normalize_ws(tagline_el.get_text(" ", strip=True))
+                    if tagline_el
+                    else card_title
+                )
+
+                img_el = event.select_one("div.thumb img") or event.find(
+                    "img", src=True
+                )
+                image_url = resolve_url(img_el.get("src")) if img_el else None
+
+                ticket_el = event.select_one("a.tickets") or event.find(
+                    "a", href=re.compile(r"ticket|buy|bit\.ly", re.IGNORECASE)
+                )
+                ticket_link = (
+                    resolve_url(ticket_el.get("href"))
+                    if ticket_el and ticket_el.get("href")
+                    else detail_url
+                )
+
+                staged_items.append(
+                    {
+                        "venue_name": venue_name,
+                        "address": resolve_venue_address(venue_name),
+                        "title": card_title,
+                        "start_time": start_time_seq,  # type: ignore[dict-item]
+                        "raw_date_str": raw_date_str,
+                        "description": description or card_title,
+                        "big_desc": description or card_title,
+                        "external_url": detail_url,
+                        "image_url": image_url,
+                        "ticket_link": ticket_link,
+                    }
+                )
+            except Exception as item_err:
+                logger.error(
+                    f"[ITEM ERROR] Failed parsing card #{idx}: {item_err}",
+                    exc_info=True,
+                )
+
+        if not staged_items:
+            return pd.DataFrame()
+
+        logger.info(
+            f"Batch-fetching {len(staged_items)} event detail pages via HTTP (workers=10)..."
+        )
+        enriched_items: List[Dict[str, Optional[str]]] = []
+        fallback_queue: List[Dict[str, Optional[str]]] = []
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [
+                executor.submit(fetch_detail_via_http, session, item)
+                for item in staged_items
+            ]
+            for fut in as_completed(futures):
+                updated_item, ok = fut.result()
+                if ok:
+                    enriched_items.append(updated_item)
+                else:
+                    fallback_queue.append(updated_item)
+
+        logger.info(
+            f"HTTP detail batch complete: {len(enriched_items)} parsed, "
+            f"{len(fallback_queue)} queued for browser fallback."
+        )
+
+        if fallback_queue:
+            driver = None
+            with virtual_display(size=(1920, 1080)) as disp:
+                try:
+                    driver = create_stealth_driver(headless=(disp is None))
+                    for item in fallback_queue:
+                        detail_url = item.get("external_url")
+                        if detail_url:
+                            try:
+                                driver.get(detail_url)
+                                time.sleep(2.5)
+                                dates, big_desc, ticket_link = parse_detail_html(
+                                    driver.page_source,
+                                    item["start_time"],  # type: ignore[arg-type]
+                                    item["big_desc"] or item["description"] or "",
+                                    item.get("ticket_link"),
+                                    detail_url,
+                                )
+                                item["start_time"] = dates  # type: ignore[assignment]
+                                item["big_desc"] = big_desc
+                                item["ticket_link"] = ticket_link
+                            except Exception as fb_err:
+                                logger.warning(
+                                    f"[FALLBACK WARN] Failed {detail_url}: {fb_err}"
+                                )
+                        enriched_items.append(item)
+                finally:
+                    if driver:
+                        try:
+                            driver.quit()
+                        except Exception:
+                            pass
+
+        raw_records = []
+        for item in enriched_items:
+            if not item.get("start_time"):
+                logger.warning(
+                    f"[SKIP] No valid dates parsed for '{item.get('title')}' (raw='{item.get('raw_date_str')}')"
+                )
+                continue
+            item.pop("raw_date_str", None)
+            raw_records.append(item)
+
+        return pd.DataFrame(raw_records) if raw_records else pd.DataFrame()
+    finally:
+        session.close()
 
 
 if __name__ == "__main__":

@@ -1,19 +1,17 @@
 """
 doylesPublicHouse.py
 Autonomous Scraper for Doyle's Public House (Tacoma, WA).
-Uses HTTP-first / JSON-LD / Popmenu extraction with lazy Xvfb/Chrome hydration fallback,
+Uses HTTP-first / JSON-LD / Popmenu extraction with lazy cross-platform browser hydration fallback,
 concurrent HTTP detail enrichment (workers=8), and centralized parse_event_dates normalization.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import glob
 import json
 import logging
 import re
-import shutil
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
@@ -25,9 +23,10 @@ from urllib3.util.retry import Retry
 from vivida_etl import (
     VividaIngestionPipeline,
     clean_html_source,
+    create_stealth_driver,
     fetch_event_text,
     parse_event_dates,
-    create_stealth_driver
+    virtual_display,
 )
 
 logging.basicConfig(
@@ -176,32 +175,30 @@ def extract_popmenu_cards(soup: BeautifulSoup) -> List[Dict[str, Any]]:
         if not title or len(title) < 3:
             continue
 
-        external_url = resolve_url(anchor.get(
-            "href")) if anchor and anchor.get("href") else TARGET_URL
+        external_url = (
+            resolve_url(anchor.get("href")) if anchor and anchor.get("href") else TARGET_URL
+        )
 
         start_dates: List[str] = []
-        month_tag = event.find(
-            ["span", "div"], class_=re.compile(r"month", re.I))
-        day_tag = event.find(
-            ["span", "div"], class_=re.compile(r"date|day", re.I))
+        month_tag = event.find(["span", "div"], class_=re.compile(r"month", re.I))
+        day_tag = event.find(["span", "div"], class_=re.compile(r"date|day", re.I))
         if month_tag and day_tag:
             month_str = normalize_ws(month_tag.get_text(" ", strip=True))
             day_str = normalize_ws(day_tag.get_text(" ", strip=True))
             start_dates = parse_event_dates(f"{month_str} {day_str}")
         if not start_dates:
-            time_el = event.find(["time", "div", "span"],
-                                 class_=re.compile(r"date|time|when", re.I))
+            time_el = event.find(
+                ["time", "div", "span"], class_=re.compile(r"date|time|when", re.I)
+            )
             if time_el:
-                raw_dt = time_el.get(
-                    "datetime") or time_el.get_text(" ", strip=True)
+                raw_dt = time_el.get("datetime") or time_el.get_text(" ", strip=True)
                 start_dates = parse_event_dates(normalize_ws(raw_dt))
 
         desc_div = event.find(
             ["div", "p", "span"], class_=re.compile(r"description|content|summary", re.I)
         )
         card_desc = (
-            normalize_ws(desc_div.get_text(" ", strip=True)
-                         ) if desc_div else None
+            normalize_ws(desc_div.get_text(" ", strip=True)) if desc_div else None
         )
 
         img_tag = event.find("img")
@@ -245,16 +242,17 @@ def enrich_detail_via_http(
 
         if not item.get("start_time"):
             date_el = main_el.find(
-                ["time", "span", "div"], class_=re.compile(r"date|when", re.I))
+                ["time", "span", "div"], class_=re.compile(r"date|when", re.I)
+            )
             if date_el:
-                raw_dt = date_el.get(
-                    "datetime") or date_el.get_text(" ", strip=True)
+                raw_dt = date_el.get("datetime") or date_el.get_text(" ", strip=True)
                 item["start_time"] = parse_event_dates(normalize_ws(raw_dt))
 
         t_btn = main_el.find(
             "a",
             href=re.compile(
-                r"ticket|rsvp|register|eventbrite|brownpapertickets|seetickets", re.I),
+                r"ticket|rsvp|register|eventbrite|brownpapertickets|seetickets", re.I
+            ),
         )
         if t_btn and t_btn.get("href"):
             item["ticket_link"] = resolve_url(t_btn["href"]) or detail_url
@@ -312,7 +310,7 @@ def consolidate_records(records: List[Dict[str, Any]]) -> pd.DataFrame:
 
 
 def scraper() -> pd.DataFrame:
-    """Scrapes Doyle's Public House events via HTTP-first + Xvfb/Chrome hydration fallback."""
+    """Scrapes Doyle's Public House events via HTTP-first + cross-platform browser hydration fallback."""
     logger.info(f"[START] Scraping Doyle's Public House: {TARGET_URL}")
     session = build_http_session(pool_size=10)
     staged_items: List[Dict[str, Any]] = []
@@ -324,77 +322,70 @@ def scraper() -> pd.DataFrame:
         soup_http = BeautifulSoup(clean_html_source(resp.text), "html.parser")
         jsonld_items = extract_jsonld_events(soup_http)
         dom_items = extract_popmenu_cards(soup_http)
-        staged_items = jsonld_items if len(
-            jsonld_items) >= len(dom_items) else dom_items
+        staged_items = jsonld_items if len(jsonld_items) >= len(dom_items) else dom_items
         if staged_items:
             logger.info(
                 f"[HTTP FAST-PATH] Extracted {len(staged_items)} Doyle's event items via HTTP."
             )
     except Exception as http_err:
         logger.warning(
-            f"[HTTP LISTING] Failed ({http_err}); falling back to Xvfb + Chrome...")
+            f"[HTTP LISTING] Failed ({http_err}); falling back to browser hydration..."
+        )
 
-    # 2. Xvfb + Chrome hydration fallback for JS-rendered Popmenu widgets
+    # 2. Cross-platform browser hydration fallback for JS-rendered Popmenu widgets
     if not staged_items:
-        display = None
         driver = None
         try:
-            from pyvirtualdisplay import Display
             from selenium.webdriver.common.by import By
             from selenium.webdriver.support import expected_conditions as EC
             from selenium.webdriver.support.ui import WebDriverWait
 
-            display = Display(visible=0, size=(1920, 1080), backend="xvfb")
-            display.start()
-            driver = create_stealth_driver()
-
-            driver.get(TARGET_URL)
-            try:
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located(
-                        (By.CSS_SELECTOR,
-                         ".pm-calendar-event-card-wrapper, a[href*='/events/']")
+            with virtual_display(size=(1920, 1080)) as disp:
+                driver = create_stealth_driver(headless=(disp is None))
+                driver.get(TARGET_URL)
+                try:
+                    WebDriverWait(driver, 10).until(
+                        EC.presence_of_element_located(
+                            (
+                                By.CSS_SELECTOR,
+                                ".pm-calendar-event-card-wrapper, a[href*='/events/']",
+                            )
+                        )
                     )
+                except Exception:
+                    pass
+                time.sleep(2.5)
+                driver.execute_script(
+                    "window.scrollTo(0, document.body.scrollHeight / 2);"
                 )
-            except Exception:
-                pass
-            time.sleep(2.5)
-            driver.execute_script(
-                "window.scrollTo(0, document.body.scrollHeight / 2);")
-            time.sleep(1.5)
-            driver.execute_script(
-                "window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(1.5)
+                time.sleep(1.5)
+                driver.execute_script(
+                    "window.scrollTo(0, document.body.scrollHeight);"
+                )
+                time.sleep(1.5)
 
-            soup_browser = BeautifulSoup(
-                clean_html_source(driver.page_source), "html.parser")
-            jsonld_items = extract_jsonld_events(soup_browser)
-            dom_items = extract_popmenu_cards(soup_browser)
-            staged_items = (
-                jsonld_items if len(jsonld_items) >= len(
-                    dom_items) else dom_items
-            )
-            logger.info(
-                f"[CHROME HYDRATION] Extracted {len(staged_items)} Doyle's event items."
-            )
+                soup_browser = BeautifulSoup(
+                    clean_html_source(driver.page_source), "html.parser"
+                )
+                jsonld_items = extract_jsonld_events(soup_browser)
+                dom_items = extract_popmenu_cards(soup_browser)
+                staged_items = (
+                    jsonld_items if len(jsonld_items) >= len(dom_items) else dom_items
+                )
+                logger.info(
+                    f"[CHROME HYDRATION] Extracted {len(staged_items)} Doyle's event items."
+                )
         except Exception as e:
-            logger.error(
-                f"[FATAL ERROR] Chrome hydration failed: {e}", exc_info=True)
+            logger.error(f"[FATAL ERROR] Chrome hydration failed: {e}", exc_info=True)
         finally:
             if driver:
                 try:
                     driver.quit()
                 except Exception:
                     pass
-            if display:
-                try:
-                    display.stop()
-                except Exception:
-                    pass
 
     if not staged_items:
-        logger.warning(
-            "[PARSER WARNING] No Doyle's Public House events found.")
+        logger.warning("[PARSER WARNING] No Doyle's Public House events found.")
         return pd.DataFrame()
 
     # 3. Concurrent HTTP detail enrichment for unique detail URLs
@@ -429,9 +420,11 @@ if __name__ == "__main__":
         success = pipeline.run_standalone_pipeline(raw_df)
         if success:
             logger.info(
-                "[PIPELINE SUCCESS] Doyle's Public House scraper execution completed successfully.")
+                "[PIPELINE SUCCESS] Doyle's Public House scraper execution completed successfully."
+            )
         else:
             logger.error(
-                "[PIPELINE ERROR] Doyle's Public House scraper pipeline execution reported errors.")
+                "[PIPELINE ERROR] Doyle's Public House scraper pipeline execution reported errors."
+            )
     else:
         logger.warning("[EXIT] No events scraped. Exiting task.")

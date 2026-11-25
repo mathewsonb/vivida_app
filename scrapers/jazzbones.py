@@ -6,28 +6,23 @@ alternate calendar routes (/events, /calendar), JSON-LD fallback,
 and centralized parse_event_dates normalization.
 """
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import glob
 import json
 import logging
 import re
-import shutil
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from bs4 import BeautifulSoup
 import pandas as pd
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 from vivida_etl import (
     VividaIngestionPipeline,
     clean_html_source,
+    create_stealth_driver,
     fetch_event_text,
     parse_event_dates,
-    create_stealth_driver
+    virtual_display,
 )
 
 logging.basicConfig(
@@ -45,15 +40,6 @@ TARGET_URLS = [
 ]
 DEFAULT_VENUE = "Jazzbones"
 DEFAULT_ADDRESS = "2803 6th Ave, Tacoma, WA 98406"
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-}
 
 
 def normalize_ws(text: Optional[str]) -> str:
@@ -75,34 +61,15 @@ def resolve_url(raw_url: Optional[str]) -> Optional[str]:
     return f"{BASE_URL}/{clean.lstrip('/')}"
 
 
-def build_http_session(pool_size: int = 8) -> requests.Session:
-    session = requests.Session()
-    session.headers.update(HEADERS)
-    retries = Retry(
-        total=2,
-        backoff_factor=0.5,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET"],
-    )
-    adapter = HTTPAdapter(
-        max_retries=retries,
-        pool_connections=pool_size,
-        pool_maxsize=pool_size,
-    )
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
-
-
 def extract_css_bg_image(style_attr: Optional[str]) -> Optional[str]:
     """Safely extracts background image URL from inline CSS style attributes."""
     if not style_attr:
         return None
     match = re.search(
-        r'url\((?:["\']?)(.*?)(?:["\']?)\)', style_attr, re.IGNORECASE)
+        r'url\((?:["\']?)(.*?)(?:["\']?)\)', style_attr, re.IGNORECASE
+    )
     if match:
         return resolve_url(match.group(1).strip())
-    # return a generic logo, if no image is retrieved
     return None
 
 
@@ -164,8 +131,7 @@ def extract_venuepilot_network_events(driver) -> List[Dict[str, Any]]:
             for ev in candidates:
                 if not isinstance(ev, dict):
                     continue
-                title = normalize_ws(
-                    str(ev.get("name") or ev.get("title") or ""))
+                title = normalize_ws(str(ev.get("name") or ev.get("title") or ""))
                 raw_date = str(
                     ev.get("date")
                     or ev.get("startDate")
@@ -197,7 +163,8 @@ def extract_venuepilot_network_events(driver) -> List[Dict[str, Any]]:
                 clean_desc = ""
                 if raw_desc:
                     desc_soup = BeautifulSoup(
-                        clean_html_source(raw_desc), "html.parser")
+                        clean_html_source(raw_desc), "html.parser"
+                    )
                     clean_desc = normalize_ws(
                         fetch_event_text(desc_soup)
                         or desc_soup.get_text(" ", strip=True)
@@ -311,16 +278,17 @@ def parse_vp_cards_from_html(html: str) -> List[Dict[str, Any]]:
         element.decompose()
 
     event_items = target_section.find_all(
-        "div", class_=re.compile(r"vp-event-card", re.I))
+        "div", class_=re.compile(r"vp-event-card", re.I)
+    )
     if not event_items:
         return []
 
     staged_items: List[Dict[str, Any]] = []
     for event in event_items:
-        title_div = event.find(
-            "div", class_=re.compile(r"vp-event-name", re.I))
-        title = normalize_ws(title_div.get_text(
-            " ", strip=True)) if title_div else ""
+        title_div = event.find("div", class_=re.compile(r"vp-event-name", re.I))
+        title = (
+            normalize_ws(title_div.get_text(" ", strip=True)) if title_div else ""
+        )
         if not title:
             continue
 
@@ -333,12 +301,12 @@ def parse_vp_cards_from_html(html: str) -> List[Dict[str, Any]]:
 
         desc_div = event.find("div", class_=re.compile(r"vp-details", re.I))
         card_desc = (
-            normalize_ws(desc_div.get_text(" ", strip=True)
-                         ) if desc_div else None
+            normalize_ws(desc_div.get_text(" ", strip=True)) if desc_div else None
         )
 
-        link_anchor = event.find("a", class_=re.compile(
-            r"vp-event-link", re.I), href=True)
+        link_anchor = event.find(
+            "a", class_=re.compile(r"vp-event-link", re.I), href=True
+        )
         detail_url = (
             resolve_url(link_anchor["href"]) if link_anchor else TARGET_URLS[0]
         )
@@ -359,7 +327,6 @@ def parse_vp_cards_from_html(html: str) -> List[Dict[str, Any]]:
         image_url = (
             extract_css_bg_image(img_div["style"])
             if img_div and img_div.get("style")
-            # fallback to generic image if none located
             else "https://jazzbones.com/wp-content/uploads/2025/10/jazzbones-logo-chrome.png"
         )
 
@@ -382,13 +349,11 @@ def parse_vp_cards_from_html(html: str) -> List[Dict[str, Any]]:
 
 def collect_dom_events_across_frames(driver) -> List[Dict[str, Any]]:
     """Checks top-level DOM, any embedded iframes (e.g. VenuePilot iframe), and JSON-LD."""
-    # 1. Top-level document
     top_html = driver.page_source
     items = parse_vp_cards_from_html(top_html)
     if items:
         return items
 
-    # 2. Check all iframes on the page (common for VenuePilot embeds)
     from selenium.webdriver.common.by import By
 
     iframes = driver.find_elements(By.TAG_NAME, "iframe")
@@ -410,12 +375,10 @@ def collect_dom_events_across_frames(driver) -> List[Dict[str, Any]]:
             except Exception:
                 pass
 
-    # 3. JSON-LD fallback on top-level document
     top_soup = BeautifulSoup(top_html, "html.parser")
     jsonld_items = extract_jsonld_events(top_soup)
     if jsonld_items:
-        logger.info(
-            f"[JSON-LD MATCH] Extracted {len(jsonld_items)} events from JSON-LD.")
+        logger.info(f"[JSON-LD MATCH] Extracted {len(jsonld_items)} events from JSON-LD.")
         return jsonld_items
 
     return []
@@ -456,74 +419,66 @@ def scraper() -> pd.DataFrame:
     """Scrapes Jazzbones events across SPA routes, iframes, network payloads, and JSON-LD."""
     logger.info(f"[START] Scraping Jazzbones: {TARGET_URLS[0]}")
 
-    display = None
     driver = None
 
     try:
-        from pyvirtualdisplay import Display
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support import expected_conditions as EC
         from selenium.webdriver.support.ui import WebDriverWait
 
-        display = Display(visible=0, size=(1920, 1080), backend="xvfb")
-        display.start()
-        driver = create_stealth_driver()
+        with virtual_display(size=(1920, 1080)) as disp:
+            driver = create_stealth_driver(headless=(disp is None))
 
-        for url in TARGET_URLS:
-            logger.info(f"[SELENIUM NAV] Rendering calendar route: {url}")
-            driver.get(url)
-            try:
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located(
-                        (
-                            By.CSS_SELECTOR,
-                            "div.vp-events-container, div.vp-event-card, iframe[src*='venuepilot']",
+            for url in TARGET_URLS:
+                logger.info(f"[SELENIUM NAV] Rendering calendar route: {url}")
+                driver.get(url)
+                try:
+                    WebDriverWait(driver, 10).until(
+                        EC.presence_of_element_located(
+                            (
+                                By.CSS_SELECTOR,
+                                "div.vp-events-container, div.vp-event-card, iframe[src*='venuepilot']",
+                            )
                         )
                     )
-                )
-            except Exception:
-                pass
-            time.sleep(2.5)
+                except Exception:
+                    pass
+                time.sleep(2.5)
 
-            # 1. Check Chrome performance logs for VenuePilot API payload
-            api_records = extract_venuepilot_network_events(driver)
-            if api_records:
-                df_api = consolidate_records(api_records)
-                if not df_api.empty:
-                    logger.info(
-                        f"[VENUEPILOT API] Extracted {len(df_api)} consolidated events from network payload."
-                    )
-                    return df_api
+                api_records = extract_venuepilot_network_events(driver)
+                if api_records:
+                    df_api = consolidate_records(api_records)
+                    if not df_api.empty:
+                        logger.info(
+                            f"[VENUEPILOT API] Extracted {len(df_api)} consolidated events from network payload."
+                        )
+                        return df_api
 
-            # 2. Check top DOM, embedded iframes, and JSON-LD
-            dom_records = collect_dom_events_across_frames(driver)
-            if dom_records:
-                df_dom = consolidate_records(dom_records)
-                if not df_dom.empty:
-                    logger.info(
-                        f"[PARSER SUCCESS] Consolidated {len(df_dom)} Jazzbones events from {url}."
-                    )
-                    return df_dom
+                dom_records = collect_dom_events_across_frames(driver)
+                if dom_records:
+                    df_dom = consolidate_records(dom_records)
+                    if not df_dom.empty:
+                        logger.info(
+                            f"[PARSER SUCCESS] Consolidated {len(df_dom)} Jazzbones events from {url}."
+                        )
+                        return df_dom
 
         logger.warning(
-            "[PARSER WARNING] Found 0 event cards across all Jazzbones calendar routes/iframes.")
+            "[PARSER WARNING] Found 0 event cards across all Jazzbones calendar routes/iframes."
+        )
         return pd.DataFrame()
 
     except Exception as e:
         logger.error(
-            f"[FATAL ERROR] Exception encountered during scraping loop: {e}", exc_info=True)
+            f"[FATAL ERROR] Exception encountered during scraping loop: {e}",
+            exc_info=True,
+        )
         return pd.DataFrame()
     finally:
         if driver:
             logger.info("[CLEANUP] Closing Chrome driver instance...")
             try:
                 driver.quit()
-            except Exception:
-                pass
-        if display:
-            logger.info("[CLEANUP] Stopping PyVirtualDisplay server...")
-            try:
-                display.stop()
             except Exception:
                 pass
 

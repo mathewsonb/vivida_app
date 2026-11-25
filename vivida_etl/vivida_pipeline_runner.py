@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 from typing import Any, Dict, List, Literal, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import ollama
@@ -35,10 +36,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("vivida_etl")
 
+LOCAL_TZ = ZoneInfo("America/Los_Angeles")
+
 # ==============================================================================
-# 1. PREPROCESSOR SCHEMA & OLLAMA EXTRACTION
+# 1. PREPROCESSOR SCHEMA & LLM EXTRACTION (OLLAMA + GEMINI FALLBACK)
 # ==============================================================================
 OLLAMA_MODEL = "gemma3:4b"
+GEMINI_MODEL = os.getenv("GEMINI_ENRICHMENT_MODEL", "gemini-2.5-flash")
 
 CATEGORY_GENRE_MAP: Dict[str, List[str]] = {
     "Live Music & Concerts": [
@@ -166,6 +170,23 @@ Guidelines:
 """
 
 
+def _get_gemini_api_key() -> Optional[str]:
+    key = (
+        os.getenv("GEMINI_API_KEY")
+        or os.getenv("VITE_GEMINI_API_KEY")
+        or ""
+    ).strip()
+    return key or None
+
+
+def _is_ollama_reachable() -> bool:
+    try:
+        ollama.list()
+        return True
+    except Exception:
+        return False
+
+
 def ensure_ollama_available(model_name: str = OLLAMA_MODEL) -> None:
     """Verifies Ollama daemon is reachable (auto-starting 'ollama serve' if offline) and model is pulled."""
     try:
@@ -223,8 +244,8 @@ def ensure_ollama_available(model_name: str = OLLAMA_MODEL) -> None:
         )
 
 
-def clean_scraped_description(raw_text: str) -> dict:
-    fallback = {
+def _default_enrichment_fallback(raw_text: str) -> dict:
+    return {
         "clean_summary": raw_text[:1000] if raw_text else "",
         "is_free": False,
         "age_restriction": "Unknown",
@@ -233,7 +254,10 @@ def clean_scraped_description(raw_text: str) -> dict:
         "genre_or_subtype": "General / Other",
     }
 
-    if not raw_text or len(raw_text.strip()) == 0:
+
+def clean_scraped_description_ollama(raw_text: str) -> dict:
+    fallback = _default_enrichment_fallback(raw_text)
+    if not raw_text or not raw_text.strip():
         return fallback
 
     # Cap input at 1800 chars (~350 tokens) to eliminate slow CPU prefill on page boilerplate
@@ -267,12 +291,71 @@ def clean_scraped_description(raw_text: str) -> dict:
         return fallback
 
 
+def clean_scraped_description_gemini(
+    raw_text: str,
+    api_key: str,
+    model_name: str = GEMINI_MODEL,
+) -> dict:
+    fallback = _default_enrichment_fallback(raw_text)
+    if not raw_text or not raw_text.strip():
+        return fallback
+
+    truncated_text = raw_text.strip()[:1800]
+
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError:
+        logger.warning("[Gemini Fallback]: 'google-genai' is not installed.")
+        return fallback
+
+    try:
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model=model_name,
+            contents=f"Extract structured event metadata:\n\n{truncated_text}",
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_INSTRUCTION,
+                response_mime_type="application/json",
+                response_schema=CleanedEventDescription,
+                temperature=0.1,
+                max_output_tokens=400,
+            ),
+        )
+        raw_json = getattr(response, "text", None) or ""
+        validated_data = CleanedEventDescription.model_validate_json(raw_json)
+        return validated_data.model_dump()
+    except Exception as e:
+        logger.warning(f"[Gemini Cleaning Error]: {e}")
+        return fallback
+
+
+def clean_scraped_description(raw_text: str) -> dict:
+    """Default single-item cleaner using Ollama (kept for backward compatibility)."""
+    return clean_scraped_description_ollama(raw_text)
+
+
 def process_event_batch(df: pd.DataFrame, max_workers: int = 2) -> pd.DataFrame:
-    """Processes DataFrame with CPU-safe concurrency (max_workers=2) to avoid thread thrashing."""
+    """
+    Processes event metadata using local Ollama when available, falling back to
+    the Gemini API when Ollama is unreachable/uninstalled and a Gemini API key is set.
+    """
     if df.empty:
         return df
 
-    ensure_ollama_available(OLLAMA_MODEL)
+    gemini_key = _get_gemini_api_key()
+    use_gemini = False
+
+    if _is_ollama_reachable():
+        ensure_ollama_available(OLLAMA_MODEL)
+    elif gemini_key:
+        logger.info(
+            f"Ollama daemon is unreachable; using Gemini API fallback ({GEMINI_MODEL}) for metadata extraction."
+        )
+        use_gemini = True
+    else:
+        # Attempt ensure_ollama_available so normal error/startup behavior is preserved when no Gemini key exists
+        ensure_ollama_available(OLLAMA_MODEL)
 
     raw_texts = []
     for _, row in df.iterrows():
@@ -282,11 +365,24 @@ def process_event_batch(df: pd.DataFrame, max_workers: int = 2) -> pd.DataFrame:
         prefix = f"Event: {title} | Venue: {venue}\n" if title else ""
         raw_texts.append(f"{prefix}{body}".strip())
 
+    backend_label = f"Gemini ({GEMINI_MODEL})" if use_gemini else f"Ollama ({OLLAMA_MODEL})"
     logger.info(
-        f"Executing Ollama metadata extraction across {len(raw_texts)} new events (workers={max_workers})..."
+        f"Executing {backend_label} metadata extraction across {len(raw_texts)} new events (workers={max_workers})..."
     )
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        results = list(executor.map(clean_scraped_description, raw_texts))
+
+    if use_gemini and gemini_key:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            results = list(
+                executor.map(
+                    lambda text: clean_scraped_description_gemini(
+                        text, api_key=gemini_key, model_name=GEMINI_MODEL
+                    ),
+                    raw_texts,
+                )
+            )
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            results = list(executor.map(clean_scraped_description_ollama, raw_texts))
 
     df["clean_description"] = [r["clean_summary"] for r in results]
     df["is_free"] = [r["is_free"] for r in results]
@@ -410,8 +506,7 @@ def batch_mood_classifier(df: pd.DataFrame, batch_size: int = 8) -> pd.DataFrame
             if total == 0:
                 return 0.5
             return (
-                sum(score_map.get(lbl, 0.0) *
-                    val for lbl, val in spectrum.items())
+                sum(score_map.get(lbl, 0.0) * val for lbl, val in spectrum.items())
                 / total
             )
 
@@ -429,8 +524,7 @@ def batch_mood_classifier(df: pd.DataFrame, batch_size: int = 8) -> pd.DataFrame
         outdoor_boost = 0.05 if env == "Outdoor" else 0.0
 
         energy_coords.append(round(b_ene + priors["energy"], 4))
-        social_coords.append(
-            round(b_soc + priors["social"] + outdoor_boost, 4))
+        social_coords.append(round(b_soc + priors["social"] + outdoor_boost, 4))
         novelty_coords.append(round(b_nov + priors["novelty"], 4))
 
     # Preserve absolute cross-venue calibration on [0, 1] instead of per-venue min-max stretching
@@ -449,8 +543,7 @@ def batch_mood_classifier(df: pd.DataFrame, batch_size: int = 8) -> pd.DataFrame
 class VividaIngestionPipeline:
     def __init__(self, table_name: str = "events"):
         self.table_name = table_name
-        self.supabase_url = os.getenv(
-            "VITE_SUPABASE_URL") or os.getenv("SUPABASE_URL")
+        self.supabase_url = os.getenv("VITE_SUPABASE_URL") or os.getenv("SUPABASE_URL")
         self.supabase_key = (
             os.getenv("VITE_SUPABASE_SERVICE_KEY")
             or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -462,8 +555,7 @@ class VividaIngestionPipeline:
                 "Missing VITE_SUPABASE_URL or VITE_SUPABASE_SERVICE_KEY environment variables."
             )
 
-        self.client: Client = create_client(
-            self.supabase_url, self.supabase_key)
+        self.client: Client = create_client(self.supabase_url, self.supabase_key)
         self._last_superseded_ids: List[str] = []
 
     @staticmethod
@@ -519,8 +611,7 @@ class VividaIngestionPipeline:
             if stripped.startswith("["):
                 try:
                     parsed = json.loads(stripped)
-                    raw_items = parsed if isinstance(
-                        parsed, list) else [stripped]
+                    raw_items = parsed if isinstance(parsed, list) else [stripped]
                 except Exception:
                     raw_items = [stripped]
             elif stripped:
@@ -533,8 +624,7 @@ class VividaIngestionPipeline:
             if isinstance(item, dict):
                 item = item.get("start_time", "")
             if isinstance(item, pd.Timestamp):
-                dt = item.tz_convert(
-                    LOCAL_TZ) if item.tzinfo is not None else item
+                dt = item.tz_convert(LOCAL_TZ) if item.tzinfo is not None else item
                 clean_dates.append(dt.strftime("%Y-%m-%d"))
             elif item is not None:
                 s = str(item).strip().strip('"').strip("'")
@@ -576,7 +666,7 @@ class VividaIngestionPipeline:
 
         # 1. Exact ID lookup
         for i in range(0, len(event_ids), chunk_size):
-            chunk = event_ids[i: i + chunk_size]
+            chunk = event_ids[i : i + chunk_size]
             try:
                 resp = (
                     self.client.table(self.table_name)
@@ -590,7 +680,8 @@ class VividaIngestionPipeline:
                         existing[row_id] = row
             except Exception as e:
                 logger.warning(
-                    f"Could not fetch existing enriched cache chunk {i}: {e}")
+                    f"Could not fetch existing enriched cache chunk {i}: {e}"
+                )
 
         # 2. Secondary (title, venue_name) lookup for missed IDs whose schedule window shifted
         if grouped_df is not None:
@@ -599,7 +690,7 @@ class VividaIngestionPipeline:
                 unique_titles = missed["title"].dropna().unique().tolist()
                 by_tv: Dict[Tuple[str, str], Dict[str, Any]] = {}
                 for i in range(0, len(unique_titles), 50):
-                    t_chunk = unique_titles[i: i + 50]
+                    t_chunk = unique_titles[i : i + 50]
                     try:
                         resp = (
                             self.client.table(self.table_name)
@@ -611,13 +702,13 @@ class VividaIngestionPipeline:
                             if self._is_valid_enrichment(row):
                                 key = (
                                     str(row.get("title", "")).strip().lower(),
-                                    str(row.get("venue_name", "")
-                                        ).strip().lower(),
+                                    str(row.get("venue_name", "")).strip().lower(),
                                 )
                                 by_tv[key] = row
                     except Exception as e:
                         logger.warning(
-                            f"Secondary (title, venue) cache lookup warning: {e}")
+                            f"Secondary (title, venue) cache lookup warning: {e}"
+                        )
 
                 for _, mrow in missed.iterrows():
                     key = (
@@ -688,8 +779,7 @@ class VividaIngestionPipeline:
             unique_addrs = [
                 addr for addr in df["address"].dropna().unique() if str(addr).strip()
             ]
-            coords_map = {addr: get_census_coordinates(
-                addr) for addr in unique_addrs}
+            coords_map = {addr: get_census_coordinates(addr) for addr in unique_addrs}
             df["latitude"] = df["address"].map(
                 lambda a: coords_map.get(a, (None, None))[0] if a else None
             )
@@ -762,11 +852,11 @@ class VividaIngestionPipeline:
 
         grouped_df = (
             df.groupby(group_cols, dropna=False, sort=False)
-            .apply(process_group)
+            .apply(process_group, include_groups=False)
             .reset_index(drop=True)
         )
 
-        # 5. Split cached vs. unenriched events so we only run Ollama + BART-large on new records
+        # 5. Split cached vs. unenriched events so we only run LLM + BART-large on new records
         existing_map, superseded_ids = self.fetch_existing_enriched(
             grouped_df["id"].tolist(), grouped_df=grouped_df
         )
@@ -824,8 +914,7 @@ class VividaIngestionPipeline:
                 "latitude": enriched_df["latitude"],
                 "longitude": enriched_df["longitude"],
                 "description": enriched_df["clean_description"].where(
-                    enriched_df["clean_description"].astype(
-                        str).str.strip() != "",
+                    enriched_df["clean_description"].astype(str).str.strip() != "",
                     enriched_df["description"],
                 ),
                 "is_free": enriched_df["is_free"].astype(bool),
@@ -852,8 +941,7 @@ class VividaIngestionPipeline:
             logger.info("No records to upsert.")
             return 0
 
-        records = transformed_df.replace(
-            {np.nan: None}).to_dict(orient="records")
+        records = transformed_df.replace({np.nan: None}).to_dict(orient="records")
         total_records = len(records)
         logger.info(
             f"Preparing to upsert {total_records} records into '{self.table_name}'..."
@@ -861,7 +949,7 @@ class VividaIngestionPipeline:
 
         upserted_count = 0
         for i in range(0, total_records, batch_size):
-            batch = records[i: i + batch_size]
+            batch = records[i : i + batch_size]
             try:
                 self.client.table(self.table_name).upsert(
                     batch,
@@ -891,10 +979,11 @@ class VividaIngestionPipeline:
 
         deleted_count = 0
         for i in range(0, len(unique_ids), chunk_size):
-            chunk = unique_ids[i: i + chunk_size]
+            chunk = unique_ids[i : i + chunk_size]
             try:
                 self.client.table(self.table_name).delete().in_(
-                    "id", chunk).execute()
+                    "id", chunk
+                ).execute()
                 deleted_count += len(chunk)
             except Exception as e:
                 logger.warning(
@@ -918,8 +1007,7 @@ class VividaIngestionPipeline:
                     self.cleanup_superseded_events(self._last_superseded_ids)
                 return True
             else:
-                logger.warning(
-                    "Pipeline finished with zero records transformed.")
+                logger.warning("Pipeline finished with zero records transformed.")
                 return False
         except Exception as e:
             logger.critical(

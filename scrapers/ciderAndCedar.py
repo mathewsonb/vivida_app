@@ -1,14 +1,12 @@
 """
 ciderAndCedar.py
 Autonomous Scraper for Cider & Cedar (Tacoma, WA).
-Uses HTTP-first Squarespace list parsing with lazy Xvfb/Chrome hydration fallback
+Uses HTTP-first Squarespace list parsing with lazy cross-platform browser hydration fallback
 and centralized parse_event_dates normalization.
 """
 
-import glob
 import logging
 import re
-import shutil
 import sys
 import time
 from typing import Any, Dict, List, Optional
@@ -23,8 +21,9 @@ from urllib3.util.retry import Retry
 from vivida_etl import (
     VividaIngestionPipeline,
     clean_html_source,
+    create_stealth_driver,
     parse_event_dates,
-    create_stealth_driver
+    virtual_display,
 )
 
 logging.basicConfig(
@@ -89,7 +88,8 @@ def build_http_session() -> requests.Session:
 def parse_squarespace_items(soup: BeautifulSoup) -> List[Dict[str, Any]]:
     """Extracts Cider & Cedar event cards from Squarespace user-items-list markup."""
     target_section = soup.find(
-        "div", class_=re.compile(r"user-items-list", re.I))
+        "div", class_=re.compile(r"user-items-list", re.I)
+    )
     if not target_section:
         return []
 
@@ -105,8 +105,7 @@ def parse_squarespace_items(soup: BeautifulSoup) -> List[Dict[str, Any]]:
     grouped: Dict[str, Dict[str, Any]] = {}
     for event in event_items:
         heading = event.find(["h2", "h3", "h4"])
-        title = normalize_ws(heading.get_text(
-            " ", strip=True)) if heading else ""
+        title = normalize_ws(heading.get_text(" ", strip=True)) if heading else ""
         if not title:
             continue
 
@@ -138,7 +137,7 @@ def parse_squarespace_items(soup: BeautifulSoup) -> List[Dict[str, Any]]:
 
         start_dates: List[str] = []
         desc_parts: List[str] = []
-        for idx, p_text in enumerate(paragraphs):
+        for p_text in paragraphs:
             if not start_dates:
                 parsed = parse_event_dates(p_text)
                 if parsed:
@@ -181,7 +180,7 @@ def parse_squarespace_items(soup: BeautifulSoup) -> List[Dict[str, Any]]:
 
 
 def scraper() -> pd.DataFrame:
-    """Scrapes Cider & Cedar events via HTTP-first Squarespace fetch + Chrome fallback."""
+    """Scrapes Cider & Cedar events via HTTP-first Squarespace fetch + browser fallback."""
     logger.info(f"[START] Scraping Cider & Cedar: {TARGET_URL}")
     session = build_http_session()
 
@@ -197,55 +196,55 @@ def scraper() -> pd.DataFrame:
             )
             return pd.DataFrame(records)
         logger.info(
-            "[HTTP LISTING] 0 items parsed statically; launching Xvfb + Chrome fallback...")
+            "[HTTP LISTING] 0 items parsed statically; launching browser fallback..."
+        )
     except Exception as http_err:
         logger.warning(
-            f"[HTTP LISTING] Failed ({http_err}); launching Xvfb + Chrome fallback...")
+            f"[HTTP LISTING] Failed ({http_err}); launching browser fallback..."
+        )
 
-    # 2. Xvfb + Chrome hydration fallback
-    display = None
+    # 2. Cross-platform virtual display + Chrome hydration fallback
     driver = None
     try:
-        from pyvirtualdisplay import Display
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support import expected_conditions as EC
         from selenium.webdriver.support.ui import WebDriverWait
 
-        display = Display(visible=0, size=(1920, 1080), backend="xvfb")
-        display.start()
-        driver = create_stealth_driver()
-        driver.get(TARGET_URL)
+        with virtual_display(size=(1920, 1080)) as disp:
+            driver = create_stealth_driver(headless=(disp is None))
+            driver.get(TARGET_URL)
 
-        try:
-            WebDriverWait(driver, 12).until(
-                EC.presence_of_element_located(
-                    (By.CSS_SELECTOR,
-                     "div.user-items-list, ul.user-items-list-item-container")
+            try:
+                WebDriverWait(driver, 12).until(
+                    EC.presence_of_element_located(
+                        (
+                            By.CSS_SELECTOR,
+                            "div.user-items-list, ul.user-items-list-item-container",
+                        )
+                    )
                 )
-            )
-        except Exception:
-            logger.warning(
-                "Timed out waiting for Squarespace list container selector.")
-        time.sleep(1.5)
+            except Exception:
+                logger.warning(
+                    "Timed out waiting for Squarespace list container selector."
+                )
+            time.sleep(1.5)
 
-        soup_browser = BeautifulSoup(
-            clean_html_source(driver.page_source), "html.parser")
-        records = parse_squarespace_items(soup_browser)
-        return pd.DataFrame(records) if records else pd.DataFrame()
+            soup_browser = BeautifulSoup(
+                clean_html_source(driver.page_source), "html.parser"
+            )
+            records = parse_squarespace_items(soup_browser)
+            return pd.DataFrame(records) if records else pd.DataFrame()
 
     except Exception as e:
         logger.error(
-            f"[FATAL ERROR] Headless browser execution failed for {TARGET_URL}: {e}", exc_info=True)
+            f"[FATAL ERROR] Headless browser execution failed for {TARGET_URL}: {e}",
+            exc_info=True,
+        )
         return pd.DataFrame()
     finally:
         if driver:
             try:
                 driver.quit()
-            except Exception:
-                pass
-        if display:
-            try:
-                display.stop()
             except Exception:
                 pass
 
@@ -259,9 +258,11 @@ if __name__ == "__main__":
         success = pipeline.run_standalone_pipeline(raw_df)
         if success:
             logger.info(
-                "[PIPELINE SUCCESS] Cider & Cedar scraper execution completed successfully.")
+                "[PIPELINE SUCCESS] Cider & Cedar scraper execution completed successfully."
+            )
         else:
             logger.error(
-                "[PIPELINE ERROR] Cider & Cedar scraper pipeline execution reported errors.")
+                "[PIPELINE ERROR] Cider & Cedar scraper pipeline execution reported errors."
+            )
     else:
         logger.warning("[EXIT] No events scraped. Exiting task.")

@@ -5,13 +5,17 @@ Fetches Google Calendar v3 events and routes directly to Supabase.
 """
 
 import logging
+import os
 import re
 import sys
 from typing import List, Optional
+from urllib.parse import quote
 
 from bs4 import BeautifulSoup
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from vivida_etl import (
     VividaIngestionPipeline,
@@ -26,8 +30,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("scrape_spar_tavern")
 
-CALENDAR_ID = "1c3f32a7ad4284a3bbc1d990d9e1fc58ac1229629b3c07cf3bf2ed2a3d2600b0@group.calendar.google.com"
-API_KEY = "AIzaSyDOtGM5jr8bNp1utVpG2_gSRH03RNGBkI8"
+CALENDAR_ID = (
+    os.getenv("GCAL_SPAR_CALENDAR_ID")
+    or "1c3f32a7ad4284a3bbc1d990d9e1fc58ac1229629b3c07cf3bf2ed2a3d2600b0@group.calendar.google.com"
+).strip()
+API_KEY = (
+    os.getenv("GCAL_API_KEY") or "AIzaSyDOtGM5jr8bNp1utVpG2_gSRH03RNGBkI8"
+).strip()
 DEFAULT_VENUE = "The Spar Tavern"
 DEFAULT_ADDRESS = "2121 N 30th St, Tacoma, WA 98403"
 VENUE_URL = "https://thespartavern.com/live-music"
@@ -84,7 +93,6 @@ def parse_gcal_local_dates(start_obj: dict, end_obj: dict) -> List[str]:
         if is_all_day:
             dt_end_local = pd.to_datetime(raw_end, errors="coerce")
             if pd.notnull(dt_end_local):
-                # Google Calendar all-day end dates are exclusive
                 inclusive_end = dt_end_local - pd.Timedelta(days=1)
                 if inclusive_end.date() > dt_start_local.date():
                     return parse_event_dates(
@@ -102,19 +110,41 @@ def parse_gcal_local_dates(start_obj: dict, end_obj: dict) -> List[str]:
     return parse_event_dates(start_str)
 
 
+def build_http_session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update(
+        {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+            )
+        }
+    )
+    retry = Retry(
+        total=2,
+        backoff_factor=0.4,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
 def scraper(days_ahead: int = 30) -> pd.DataFrame:
     """Queries Google Calendar v3 API for The Spar Tavern events and returns raw DataFrame."""
     logger.info("Starting The Spar Tavern Google Calendar API fetch...")
 
     now = pd.Timestamp.now(tz="UTC")
     time_min = now.strftime("%Y-%m-%dT00:00:00Z")
-    time_max = (now + pd.Timedelta(days=days_ahead)
-                ).strftime("%Y-%m-%dT23:59:59Z")
+    time_max = (now + pd.Timedelta(days=days_ahead)).strftime("%Y-%m-%dT23:59:59Z")
     limit = 250
+    encoded_cal_id = quote(CALENDAR_ID, safe="")
 
     api_url = (
-        f"https://clients6.google.com/calendar/v3/calendars/{CALENDAR_ID}/events"
-        f"?calendarId={CALENDAR_ID}"
+        f"https://clients6.google.com/calendar/v3/calendars/{encoded_cal_id}/events"
+        f"?calendarId={encoded_cal_id}"
         f"&singleEvents=true"
         f"&orderBy=startTime"
         f"&timeZone=America%2FLos_Angeles"
@@ -125,21 +155,19 @@ def scraper(days_ahead: int = 30) -> pd.DataFrame:
         f"&key={API_KEY}"
     )
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
-
+    session = build_http_session()
     try:
-        response = requests.get(api_url, headers=headers, timeout=15)
+        response = session.get(api_url, timeout=15)
         response.raise_for_status()
         payload = response.json()
     except Exception as e:
         logger.error(f"Failed to query Google Calendar API endpoint: {e}")
         return pd.DataFrame()
+    finally:
+        session.close()
 
     items = payload.get("items", [])
-    logger.info(
-        f"Retrieved {len(items)} event items from Google Calendar API.")
+    logger.info(f"Retrieved {len(items)} event items from Google Calendar API.")
 
     events_data = []
 
@@ -161,8 +189,7 @@ def scraper(days_ahead: int = 30) -> pd.DataFrame:
             continue
 
         location_str = normalize_display_text(event.get("location"))
-        full_text = "\n".join(
-            filter(None, [raw_summary, raw_desc, location_str]))
+        full_text = "\n".join(filter(None, [raw_summary, raw_desc, location_str]))
 
         events_data.append(
             {
@@ -189,12 +216,8 @@ if __name__ == "__main__":
         pipeline = VividaIngestionPipeline(table_name="events")
         success = pipeline.run_standalone_pipeline(raw_df)
         if success:
-            logger.info(
-                "The Spar Tavern scraper execution completed successfully."
-            )
+            logger.info("The Spar Tavern scraper execution completed successfully.")
         else:
-            logger.error(
-                "The Spar Tavern scraper pipeline execution reported errors."
-            )
+            logger.error("The Spar Tavern scraper pipeline execution reported errors.")
     else:
         logger.warning("No events scraped. Exiting task.")

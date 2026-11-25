@@ -7,10 +7,8 @@ to VividaIngestionPipeline.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import glob
 import logging
 import re
-import shutil
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -24,9 +22,10 @@ from urllib3.util.retry import Retry
 from vivida_etl import (
     VividaIngestionPipeline,
     clean_html_source,
+    create_stealth_driver,
     fetch_event_text,
     parse_event_dates,
-    create_stealth_driver
+    virtual_display,
 )
 
 logging.basicConfig(
@@ -87,15 +86,15 @@ def build_http_session(pool_size: int = 12) -> requests.Session:
     return session
 
 
-def scroll_page_to_bottom(driver, max_scrolls: int = 10, pause_time: float = 2.0) -> None:
+def scroll_page_to_bottom(
+    driver, max_scrolls: int = 10, pause_time: float = 2.0
+) -> None:
     """Iteratively scrolls and clicks MEC Load More buttons to unfold all upcoming events."""
-    logger.info(
-        "[SELENIUM SCROLL] Executing dynamic scroll / load-more loop...")
+    logger.info("[BROWSER SCROLL] Executing dynamic scroll / load-more loop...")
     last_height = driver.execute_script("return document.body.scrollHeight")
 
     for _ in range(max_scrolls):
-        driver.execute_script(
-            "window.scrollTo(0, document.body.scrollHeight);")
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(pause_time)
 
         clicked = False
@@ -125,9 +124,9 @@ def extract_mec_dates(container: BeautifulSoup) -> List[str]:
         return []
 
     start_span = container.find(
-        "span", class_=re.compile(r"mec-start-date-label", re.I))
-    end_span = container.find(
-        "span", class_=re.compile(r"mec-end-date-label", re.I))
+        "span", class_=re.compile(r"mec-start-date-label", re.I)
+    )
+    end_span = container.find("span", class_=re.compile(r"mec-end-date-label", re.I))
 
     if start_span and end_span:
         s_txt = normalize_ws(start_span.get_text(" ", strip=True))
@@ -138,16 +137,15 @@ def extract_mec_dates(container: BeautifulSoup) -> List[str]:
                 return dates
 
     if start_span:
-        dates = parse_event_dates(normalize_ws(
-            start_span.get_text(" ", strip=True)))
+        dates = parse_event_dates(normalize_ws(start_span.get_text(" ", strip=True)))
         if dates:
             return dates
 
-    date_el = container.find(["span", "div"], class_=re.compile(
-        r"mec-event-date|mec-date", re.I))
+    date_el = container.find(
+        ["span", "div"], class_=re.compile(r"mec-event-date|mec-date", re.I)
+    )
     if date_el:
-        dates = parse_event_dates(normalize_ws(
-            date_el.get_text(" ", strip=True)))
+        dates = parse_event_dates(normalize_ws(date_el.get_text(" ", strip=True)))
         if dates:
             return dates
 
@@ -173,10 +171,11 @@ def parse_detail_html(
     dates = current_dates or extract_mec_dates(det_soup)
 
     det_container = (
-        det_soup.find("div", class_=re.compile(
-            r"elementor-widget-text-editor", re.I))
+        det_soup.find("div", class_=re.compile(r"elementor-widget-text-editor", re.I))
         or det_soup.find("div", class_="elementor-widget-container")
-        or det_soup.find("div", class_=re.compile(r"entry-content|mec-single-event-description", re.I))
+        or det_soup.find(
+            "div", class_=re.compile(r"entry-content|mec-single-event-description", re.I)
+        )
         or det_soup.find("main")
         or det_soup
     )
@@ -239,28 +238,29 @@ def scraper() -> pd.DataFrame:
     logger.info(f"[START] Scraping Tacoma Arts Live: {TARGET_URL}")
     session = build_http_session(pool_size=12)
 
-    display = None
+    disp_ctx = None
+    active_disp = None
     driver = None
     main_html: Optional[str] = None
 
     def ensure_browser():
-        nonlocal display, driver
+        nonlocal disp_ctx, active_disp, driver
+        if disp_ctx is None:
+            disp_ctx = virtual_display(size=(1920, 1080))
+            active_disp = disp_ctx.__enter__()
         if driver is None:
-            from pyvirtualdisplay import Display
-
-            display = Display(visible=0, size=(1920, 1080), backend="xvfb")
-            display.start()
-            driver = create_stealth_driver()
+            driver = create_stealth_driver(headless=(active_disp is None))
         return driver
 
     try:
-        # 1. HTTP-first listing check (falls back to Chrome if WAF blocks or MEC Load More exists)
+        # 1. HTTP-first listing check (falls back to browser if WAF blocks or MEC Load More exists)
         try:
             resp = session.get(TARGET_URL, timeout=15)
             resp.raise_for_status()
             soup_check = BeautifulSoup(resp.text, "html.parser")
-            cards = soup_check.select(
-                "article.mec-event-article") or soup_check.select("div.col-md-4")
+            cards = soup_check.select("article.mec-event-article") or soup_check.select(
+                "div.col-md-4"
+            )
             load_more = soup_check.select_one(
                 "a.mec-load-more-button, .mec-load-more-wrap a, button.mec-load-more-button"
             )
@@ -272,11 +272,11 @@ def scraper() -> pd.DataFrame:
             elif cards:
                 logger.info(
                     f"[LISTING] Initial HTTP fetch found {len(cards)} cards with MEC Load More button; "
-                    "launching Xvfb + Chrome to unfold full listing..."
+                    "launching browser to unfold full listing..."
                 )
         except Exception as http_err:
             logger.warning(
-                f"[LISTING] HTTP listing fetch failed ({http_err}); launching Xvfb + Chrome fallback..."
+                f"[LISTING] HTTP listing fetch failed ({http_err}); launching browser fallback..."
             )
 
         if not main_html:
@@ -303,43 +303,46 @@ def scraper() -> pd.DataFrame:
             event_cards = soup.select("div.col-md-4")
 
         if not event_cards:
-            logger.warning(
-                "[PARSER WARNING] Found 0 event cards matching selector grid.")
+            logger.warning("[PARSER WARNING] Found 0 event cards matching selector grid.")
             return pd.DataFrame()
 
         logger.info(
-            f"[PARSER SUCCESS] Found {len(event_cards)} candidate MEC event cards.")
+            f"[PARSER SUCCESS] Found {len(event_cards)} candidate MEC event cards."
+        )
 
         # Consolidate recurring MEC cards (same detail_url/title) into discrete date arrays
         grouped_items: Dict[str, Dict[str, Any]] = {}
 
         for idx, card in enumerate(event_cards, start=1):
             try:
-                title_el = card.find("h4", class_=re.compile(
-                    r"mec-event-title|title", re.I)) or card.find(["h4", "h3"])
-                link_tag = title_el.find(
-                    "a", href=True) if title_el else card.find("a", href=True)
+                title_el = card.find(
+                    "h4", class_=re.compile(r"mec-event-title|title", re.I)
+                ) or card.find(["h4", "h3"])
+                link_tag = (
+                    title_el.find("a", href=True)
+                    if title_el
+                    else card.find("a", href=True)
+                )
 
-                card_title = normalize_ws(link_tag.get_text(
-                    " ", strip=True)) if link_tag else ""
+                card_title = (
+                    normalize_ws(link_tag.get_text(" ", strip=True)) if link_tag else ""
+                )
                 if not card_title and title_el:
-                    card_title = normalize_ws(
-                        title_el.get_text(" ", strip=True))
+                    card_title = normalize_ws(title_el.get_text(" ", strip=True))
                 if not card_title:
                     continue
 
-                detail_url = resolve_url(
-                    link_tag.get("href")) if link_tag else None
+                detail_url = resolve_url(link_tag.get("href")) if link_tag else None
                 start_time_list = extract_mec_dates(card)
 
                 group_key = detail_url or card_title.lower()
                 if group_key in grouped_items:
-                    grouped_items[group_key]["dates_set"].update(
-                        start_time_list)
+                    grouped_items[group_key]["dates_set"].update(start_time_list)
                     continue
 
-                loc_p = card.find("p", class_=re.compile(
-                    r"mec-grid-event-location|location", re.I))
+                loc_p = card.find(
+                    "p", class_=re.compile(r"mec-grid-event-location|location", re.I)
+                )
                 venue_name = DEFAULT_VENUE
                 address = DEFAULT_ADDRESS
                 if loc_p:
@@ -354,7 +357,8 @@ def scraper() -> pd.DataFrame:
                         address = ", ".join(loc_parts[1:])
 
                 img_tag = card.find("img", src=True) or card.find(
-                    "img", attrs={"data-src": True})
+                    "img", attrs={"data-src": True}
+                )
                 image_url = (
                     resolve_url(img_tag.get("data-src") or img_tag.get("src"))
                     if img_tag
@@ -374,7 +378,9 @@ def scraper() -> pd.DataFrame:
                 }
             except Exception as item_err:
                 logger.error(
-                    f"[ITEM ERROR] Failed parsing event #{idx}: {item_err}", exc_info=True)
+                    f"[ITEM ERROR] Failed parsing event #{idx}: {item_err}",
+                    exc_info=True,
+                )
 
         if not grouped_items:
             return pd.DataFrame()
@@ -407,7 +413,7 @@ def scraper() -> pd.DataFrame:
 
         logger.info(
             f"HTTP detail batch complete: {len(enriched_items)} parsed, "
-            f"{len(fallback_queue)} queued for Chrome fallback."
+            f"{len(fallback_queue)} queued for browser fallback."
         )
 
         # 3. Single-browser fallback ONLY for detail pages that failed HTTP
@@ -430,15 +436,15 @@ def scraper() -> pd.DataFrame:
                         item["big_desc"] = big_desc
                         item["ticket_link"] = ticket_link
                     except Exception as fb_err:
-                        logger.warning(
-                            f"[FALLBACK WARN] Failed {detail_url}: {fb_err}")
+                        logger.warning(f"[FALLBACK WARN] Failed {detail_url}: {fb_err}")
                 enriched_items.append(item)
 
         raw_records = []
         for item in enriched_items:
             if not item.get("start_time"):
                 logger.warning(
-                    f"[SKIP] No valid dates parsed for '{item.get('title')}'.")
+                    f"[SKIP] No valid dates parsed for '{item.get('title')}'."
+                )
                 continue
             raw_records.append(item)
 
@@ -446,7 +452,9 @@ def scraper() -> pd.DataFrame:
 
     except Exception as e:
         logger.error(
-            f"[FATAL ERROR] Exception encountered during scraping loop: {e}", exc_info=True)
+            f"[FATAL ERROR] Exception encountered during scraping loop: {e}",
+            exc_info=True,
+        )
         return pd.DataFrame()
     finally:
         if driver:
@@ -455,10 +463,10 @@ def scraper() -> pd.DataFrame:
                 driver.quit()
             except Exception:
                 pass
-        if display:
-            logger.info("[CLEANUP] Stopping PyVirtualDisplay server...")
+        if disp_ctx is not None:
+            logger.info("[CLEANUP] Stopping virtual display context...")
             try:
-                display.stop()
+                disp_ctx.__exit__(None, None, None)
             except Exception:
                 pass
 
@@ -472,9 +480,11 @@ if __name__ == "__main__":
         success = pipeline.run_standalone_pipeline(raw_df)
         if success:
             logger.info(
-                "[PIPELINE SUCCESS] Tacoma Arts Live scraper completed successfully.")
+                "[PIPELINE SUCCESS] Tacoma Arts Live scraper completed successfully."
+            )
         else:
             logger.error(
-                "[PIPELINE ERROR] Tacoma Arts Live scraper pipeline execution reported errors.")
+                "[PIPELINE ERROR] Tacoma Arts Live scraper pipeline execution reported errors."
+            )
     else:
         logger.warning("[EXIT] No events scraped. Pipeline handoff skipped.")

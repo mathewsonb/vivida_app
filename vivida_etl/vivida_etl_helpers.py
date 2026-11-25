@@ -1,6 +1,6 @@
 """
 vivida_etl_helpers.py
-Consolidated ETL pipeline helpers aligned with Supabase schema & headless execution.
+Consolidated ETL pipeline helpers aligned with Supabase schema & cross-platform execution.
 """
 from datetime import datetime
 from functools import lru_cache
@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from typing import Any, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
@@ -26,115 +27,222 @@ LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 
 
 def get_headless_chrome_options() -> Options:
-    """Returns Chrome options optimized for headless Xvfb / GitHub Actions environments."""
+    """Returns Chrome options optimized for headless / virtual display environments."""
     options = Options()
     options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--disable-blink-features=AutomationControlled")
+    if sys.platform.startswith("linux"):
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-gpu")
     return options
 
 
-def _detect_chrome_binary_and_major() -> Tuple[Optional[str], Optional[int], Optional[str]]:
-    """Finds the installed Chrome binary, its major version, and any matching cached chromedriver."""
-    cached_chrome = sorted(
-        glob.glob("/home/vscode/.cache/selenium/chrome/linux64/*/chrome")
-    )
-    chrome_bin = (
-        shutil.which("google-chrome")
-        or shutil.which("google-chrome-stable")
-        or shutil.which("chromium")
-        or shutil.which("chromium-browser")
-        or (cached_chrome[-1] if cached_chrome else None)
-    )
-    if not chrome_bin:
-        return None, None, None
+def _candidate_chrome_binaries() -> List[str]:
+    """Collects likely Chrome/Chromium executable paths across Linux and Windows."""
+    candidates: List[str] = []
 
-    major_version: Optional[int] = None
+    for cmd_name in (
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "chrome",
+    ):
+        found = shutil.which(cmd_name)
+        if found and found not in candidates:
+            candidates.append(found)
 
-    # 1. Try parsing from --version CLI output
+    if os.name == "nt":
+        env_roots = [
+            os.environ.get("PROGRAMFILES", r"C:\Program Files"),
+            os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
+            os.environ.get("LOCALAPPDATA", ""),
+        ]
+        for root in env_roots:
+            if not root:
+                continue
+            win_chrome = os.path.join(root, "Google", "Chrome", "Application", "chrome.exe")
+            if os.path.isfile(win_chrome) and win_chrome not in candidates:
+                candidates.append(win_chrome)
+
+        win_cached = sorted(
+            glob.glob(
+                os.path.join(
+                    os.environ.get("USERPROFILE", os.path.expanduser("~")),
+                    ".cache",
+                    "selenium",
+                    "chrome",
+                    "win64",
+                    "*",
+                    "chrome.exe",
+                )
+            )
+        )
+        for path in reversed(win_cached):
+            if os.path.isfile(path) and path not in candidates:
+                candidates.append(path)
+    else:
+        home_dir = os.path.expanduser("~")
+        linux_cached = sorted(
+            glob.glob(os.path.join(home_dir, ".cache", "selenium", "chrome", "linux64", "*", "chrome"))
+        )
+        for path in reversed(linux_cached):
+            if os.path.isfile(path) and path not in candidates:
+                candidates.append(path)
+
+    return candidates
+
+
+def _parse_major_version_from_binary(chrome_bin: str) -> Optional[int]:
+    """Extracts Chrome's major version via CLI/version metadata or path fallback."""
+    if os.name == "nt":
+        try:
+            escaped_path = chrome_bin.replace("'", "''")
+            ps_cmd = f"(Get-Item -LiteralPath '{escaped_path}').VersionInfo.ProductMajorPart"
+            out = subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command", ps_cmd],
+                stderr=subprocess.STDOUT,
+                timeout=5,
+            ).decode("utf-8", errors="ignore").strip()
+            if out.isdigit():
+                return int(out)
+        except Exception:
+            pass
+
     try:
         out = subprocess.check_output(
             [chrome_bin, "--version"], stderr=subprocess.STDOUT, timeout=5
         ).decode("utf-8", errors="ignore")
-        m = re.search(r"(\d{2,3})\.\d+\.\d+", out)
+        m = re.search(r"\b(\d{2,3})\.\d+\.\d+", out)
         if m:
-            major_version = int(m.group(1))
+            return int(m.group(1))
     except Exception:
         pass
 
-    # 2. Fallback: extract version folder from binary or resolved symlink path
-    if major_version is None:
-        for candidate_path in (chrome_bin, os.path.realpath(chrome_bin)):
-            m_path = re.search(r"/(\d{2,3})\.\d+\.\d+", candidate_path)
-            if m_path:
-                major_version = int(m_path.group(1))
-                break
+    for candidate_path in (chrome_bin, os.path.realpath(chrome_bin)):
+        m_path = re.search(r"[/\\](\d{2,3})\.\d+\.\d+", candidate_path)
+        if m_path:
+            return int(m_path.group(1))
 
-    # 3. Look for a matching cached chromedriver executable in Selenium's cache
+    return None
+
+
+def _resolve_driver_via_selenium_manager(
+    chrome_bin: Optional[str], major_version: Optional[int]
+) -> Tuple[Optional[str], Optional[str]]:
+    """Uses Selenium Manager to resolve browser_path and driver_path on any OS."""
+    try:
+        from selenium.webdriver.common.selenium_manager import SeleniumManager
+
+        sm_args: List[str] = ["--browser", "chrome"]
+        if major_version is not None:
+            sm_args.extend(["--browser-version", str(major_version)])
+        if chrome_bin:
+            sm_args.extend(["--browser-path", chrome_bin])
+
+        res = SeleniumManager().binary_paths(sm_args) or {}
+        driver_path = res.get("driver_path")
+        browser_path = res.get("browser_path")
+        resolved_driver = (
+            driver_path if driver_path and os.path.isfile(driver_path) else None
+        )
+        resolved_browser = (
+            browser_path if browser_path and os.path.isfile(browser_path) else None
+        )
+        return resolved_browser, resolved_driver
+    except Exception:
+        return None, None
+
+
+def _detect_chrome_binary_and_major() -> Tuple[Optional[str], Optional[int], Optional[str]]:
+    """Finds the installed Chrome binary, its major version, and a matching chromedriver."""
+    chrome_bin: Optional[str] = None
+    for candidate in _candidate_chrome_binaries():
+        if os.path.isfile(candidate):
+            chrome_bin = candidate
+            break
+
+    major_version = (
+        _parse_major_version_from_binary(chrome_bin) if chrome_bin else None
+    )
+
     driver_bin: Optional[str] = None
+    driver_ext = ".exe" if os.name == "nt" else ""
+    home_dir = os.path.expanduser("~")
+
     if major_version is not None:
+        platform_subdir = "win64" if os.name == "nt" else "linux64"
         cached_drivers = sorted(
             glob.glob(
-                f"/home/vscode/.cache/selenium/chromedriver/linux64/{major_version}.*/chromedriver")
+                os.path.join(
+                    home_dir,
+                    ".cache",
+                    "selenium",
+                    "chromedriver",
+                    platform_subdir,
+                    f"{major_version}.*",
+                    f"chromedriver{driver_ext}",
+                )
+            )
         )
         if cached_drivers:
             driver_bin = cached_drivers[-1]
-        else:
-            # Ask Selenium Manager to fetch the exact matching chromedriver for `major_version`
-            try:
-                from selenium.webdriver.common.selenium_manager import SeleniumManager
 
-                sm_args = ["--browser", "chrome",
-                           "--browser-version", str(major_version)]
-                if chrome_bin:
-                    sm_args.extend(["--browser-path", chrome_bin])
-                res = SeleniumManager().binary_paths(sm_args)
-                fetched_driver = res.get("driver_path")
-                if fetched_driver and os.path.exists(fetched_driver):
-                    driver_bin = fetched_driver
-            except Exception:
-                pass
+    sm_browser, sm_driver = _resolve_driver_via_selenium_manager(
+        chrome_bin=chrome_bin, major_version=major_version
+    )
+    if chrome_bin is None and sm_browser:
+        chrome_bin = sm_browser
+        if major_version is None:
+            major_version = _parse_major_version_from_binary(chrome_bin)
+    if sm_driver:
+        driver_bin = sm_driver
 
     return chrome_bin, major_version, driver_bin
 
 
 def create_stealth_driver(headless: bool = False):
     """
-    Instantiates an undetected_chromedriver instance dynamically pinned to the
-    installed Chrome binary's major version, using Selenium Manager to guarantee
-    an exact-version chromedriver binary and clearing stale patches on mismatch.
+    Instantiates an undetected_chromedriver instance pinned to the installed
+    Chrome binary's major version across Windows and Linux, clearing stale
+    cached patches on SessionNotCreatedException.
     """
     import undetected_chromedriver as uc
     from selenium.common.exceptions import SessionNotCreatedException
 
     chrome_bin, major_version, cached_driver = _detect_chrome_binary_and_major()
+    driver_ext = ".exe" if os.name == "nt" else ""
+    uc_cache_dir = os.path.join(
+        os.path.expanduser("~"), ".local", "share", "undetected_chromedriver"
+    )
 
     def _build():
         options = uc.ChromeOptions()
         if headless:
             options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--window-size=1920,1080")
-        options.add_argument("--disable-gpu")
+        if sys.platform.startswith("linux"):
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-gpu")
         if chrome_bin:
             options.binary_location = chrome_bin
 
-        kwargs = {"options": options}
+        kwargs: dict[str, Any] = {"options": options}
         if major_version is not None:
             kwargs["version_main"] = major_version
-        if cached_driver and os.path.exists(cached_driver):
-            uc_dir = os.path.expanduser(
-                "~/.local/share/undetected_chromedriver")
-            os.makedirs(uc_dir, exist_ok=True)
+        if cached_driver and os.path.isfile(cached_driver):
+            os.makedirs(uc_cache_dir, exist_ok=True)
+            ver_tag = str(major_version) if major_version is not None else "auto"
             patched_target = os.path.join(
-                uc_dir, f"chromedriver_{major_version}")
-            if not os.path.exists(patched_target):
+                uc_cache_dir, f"chromedriver_{ver_tag}{driver_ext}"
+            )
+            if not os.path.isfile(patched_target):
                 shutil.copy2(cached_driver, patched_target)
-                os.chmod(patched_target, 0o755)
+                if os.name != "nt":
+                    os.chmod(patched_target, 0o755)
             kwargs["driver_executable_path"] = patched_target
 
         return uc.Chrome(**kwargs)
@@ -142,10 +250,9 @@ def create_stealth_driver(headless: bool = False):
     try:
         return _build()
     except SessionNotCreatedException:
-        cache_dir = os.path.expanduser(
-            "~/.local/share/undetected_chromedriver")
-        shutil.rmtree(cache_dir, ignore_errors=True)
+        shutil.rmtree(uc_cache_dir, ignore_errors=True)
         return _build()
+
 
 # --- 2. HTML & SCRAPER HELPERS ---
 
@@ -181,6 +288,7 @@ def fetch_event_text(soup: BeautifulSoup) -> Optional[str]:
         print(f"[Parser Warning] Failed to clean event text: {e}")
         return None
 
+
 # --- 3. GEOCODING & CLEANING HELPERS ---
 
 
@@ -208,6 +316,7 @@ def get_census_coordinates(address_string: str) -> Tuple[Optional[float], Option
         pass
 
     return (None, None)
+
 
 # --- 4. IDENTIFIERS & DETERMINISTIC HASHING ---
 
@@ -259,8 +368,7 @@ def _infer_year(month_str: str, day_str: str, default_year: Optional[int] = None
     if pd.isna(dt):
         return None
     if default_year is None and (now - dt.to_pydatetime()).days > 60:
-        dt = pd.to_datetime(
-            f"{month_str} {day_str}, {yr + 1}", errors="coerce")
+        dt = pd.to_datetime(f"{month_str} {day_str}, {yr + 1}", errors="coerce")
     return dt
 
 
@@ -307,12 +415,9 @@ def parse_event_dates(
 ) -> List[str]:
     """
     Universal date parser enforcing Vivida's 3 scheduling rules (outputs flat local YYYY-MM-DD strings):
-      1. Dash/through/to ranges ('Dec 4 - 6, 2026', 'Nov 28 through Dec 2, 2026', '12/04/2026 - 12/06/2026'):
-         Continuous run -> returns [start_date, end_date] endpoints ONLY (no interior expansion).
-      2. Comma/ampersand-separated dates ('Dec 4, Dec 5, Dec 6, 2026' or 'Dec 4, 5 & 6, 2026'):
-         Discrete dates -> returns every listed date individually.
-      3. Recurrence frequency ('daily', 'weekly', 'biweekly', 'monthly'):
-         Generates forward dates capped at `max_iterations` (default 10).
+    1. Dash/through/to ranges -> [start_date, end_date] endpoints ONLY.
+    2. Comma/ampersand-separated dates -> every listed date individually.
+    3. Recurrence frequency ('daily', 'weekly', 'biweekly', 'monthly') -> up to `max_iterations`.
     """
     if raw_date_str is None or (not isinstance(raw_date_str, list) and pd.isna(raw_date_str)):
         return []
@@ -372,8 +477,7 @@ def parse_event_dates(
         flags=re.IGNORECASE,
     )
     if m:
-        d1, d2 = pd.to_datetime(m.group(1), errors="coerce"), pd.to_datetime(
-            m.group(2), errors="coerce")
+        d1, d2 = pd.to_datetime(m.group(1), errors="coerce"), pd.to_datetime(m.group(2), errors="coerce")
         if pd.notnull(d1) and pd.notnull(d2):
             return sorted(set([d1.strftime("%Y-%m-%d"), d2.strftime("%Y-%m-%d")]))
 
@@ -384,8 +488,7 @@ def parse_event_dates(
         flags=re.IGNORECASE,
     )
     if m:
-        d1, d2 = pd.to_datetime(m.group(1), errors="coerce"), pd.to_datetime(
-            m.group(2), errors="coerce")
+        d1, d2 = pd.to_datetime(m.group(1), errors="coerce"), pd.to_datetime(m.group(2), errors="coerce")
         if pd.notnull(d1) and pd.notnull(d2):
             return sorted(set([d1.strftime("%Y-%m-%d"), d2.strftime("%Y-%m-%d")]))
 
@@ -425,7 +528,7 @@ def parse_event_dates(
         if dt1 is not None and dt2 is not None and pd.notnull(dt1) and pd.notnull(dt2):
             return sorted(set([dt1.strftime("%Y-%m-%d"), dt2.strftime("%Y-%m-%d")]))
 
-    # Rule 2A: Same-Month Discrete Comma/Ampersand List -> "Dec 4, 5 & 6, 2026" (allows trailing times)
+    # Rule 2A: Same-Month Discrete Comma/Ampersand List -> "Dec 4, 5 & 6, 2026"
     m = re.search(
         r"\b([A-Za-z]+)\s+((?:\d{1,2}\s*(?:,|&|\band\b)\s*)+\d{1,2})(?:,?\s*(\d{4}))?",
         text,
@@ -463,11 +566,9 @@ def parse_event_dates(
     # Rule 3 / Single Date Fallback (+ optional frequency expansion up to max_iterations)
     dt_single = pd.to_datetime(text, errors="coerce", format="mixed")
     if pd.isna(dt_single):
-        # Fallback for yearless single date like "Dec 4" or "Dec 4 at 7:00 PM"
         m_single = re.search(r"\b([A-Za-z]+)\s+(\d{1,2})\b", text)
         if m_single:
-            dt_single = _infer_year(m_single.group(
-                1), m_single.group(2), default_year)
+            dt_single = _infer_year(m_single.group(1), m_single.group(2), default_year)
 
     if dt_single is not None and pd.notnull(dt_single):
         if dt_single.tzinfo is not None:

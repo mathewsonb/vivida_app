@@ -2,14 +2,12 @@
 gigHarbor.py
 Autonomous Scraper for Visit Gig Harbor Events (The Events Calendar / Tribe).
 Uses Tribe REST API fast-path with HTTP-first list/detail fallback (workers=10)
-and lazy Xvfb/Chrome hydration, plus centralized parse_event_dates normalization.
+and lazy cross-platform browser hydration, plus centralized parse_event_dates normalization.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import glob
 import logging
 import re
-import shutil
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,9 +21,10 @@ from urllib3.util.retry import Retry
 from vivida_etl import (
     VividaIngestionPipeline,
     clean_html_source,
+    create_stealth_driver,
     fetch_event_text,
     parse_event_dates,
-    create_stealth_driver
+    virtual_display,
 )
 
 logging.basicConfig(
@@ -109,8 +108,7 @@ def format_tribe_venue_and_address(venue_obj: Any) -> Tuple[str, str]:
     venue_name = strip_html_text(venue_obj.get("venue")) or DEFAULT_VENUE
     street = normalize_ws(venue_obj.get("address"))
     city = normalize_ws(venue_obj.get("city")) or "Gig Harbor"
-    state = normalize_ws(venue_obj.get(
-        "state") or venue_obj.get("province")) or "WA"
+    state = normalize_ws(venue_obj.get("state") or venue_obj.get("province")) or "WA"
     zip_code = normalize_ws(venue_obj.get("zip"))
 
     state_zip = f"{state} {zip_code}".strip()
@@ -122,8 +120,7 @@ def format_tribe_venue_and_address(venue_obj: Any) -> Tuple[str, str]:
 def fetch_via_tribe_api(session: requests.Session, max_pages: int = 5) -> List[Dict[str, Any]]:
     """Fast-path: queries The Events Calendar (Tribe) REST API on visitgigharbor.com."""
     grouped: Dict[str, Dict[str, Any]] = {}
-    now_str = pd.Timestamp.now(
-        tz="America/Los_Angeles").strftime("%Y-%m-%d 00:00:00")
+    now_str = pd.Timestamp.now(tz="America/Los_Angeles").strftime("%Y-%m-%d 00:00:00")
 
     for page in range(1, max_pages + 1):
         resp = session.get(
@@ -168,12 +165,9 @@ def fetch_via_tribe_api(session: requests.Session, max_pages: int = 5) -> List[D
                 grouped[group_key]["dates_set"].update(start_times)
                 continue
 
-            venue_name, address = format_tribe_venue_and_address(
-                ev.get("venue"))
+            venue_name, address = format_tribe_venue_and_address(ev.get("venue"))
             short_desc = strip_html_text(ev.get("excerpt"))
             full_desc = strip_html_text(ev.get("description"))
-            # img_obj = ev.get("image") if isinstance(
-            #     ev.get("image"), dict) else {}
 
             grouped[group_key] = {
                 "venue_name": venue_name,
@@ -183,7 +177,6 @@ def fetch_via_tribe_api(session: requests.Session, max_pages: int = 5) -> List[D
                 "description": short_desc or full_desc[:250] or title,
                 "big_desc": full_desc or short_desc or title,
                 "external_url": detail_url,
-                # resolve_url(img_obj.get("url")),
                 "image_url": "https://visitgigharbor.com/wp-content/uploads/2026/10/cropped-vgh-logo.png",
                 "ticket_link": resolve_url(ev.get("website")) or detail_url,
             }
@@ -221,8 +214,7 @@ def parse_detail_html(html: str, url: str) -> Optional[Dict[str, Any]]:
         return None
 
     target_section = (
-        det_soup.find("div", class_=re.compile(
-            r"tribe-events-single|entry-content", re.I))
+        det_soup.find("div", class_=re.compile(r"tribe-events-single|entry-content", re.I))
         or det_soup.find("div", id="tribe-events-content")
         or det_soup
     )
@@ -260,8 +252,7 @@ def parse_detail_html(html: str, url: str) -> Optional[Dict[str, Any]]:
     )
     if start_el:
         s_txt = normalize_ws(start_el.get_text(" ", strip=True))
-        e_txt = normalize_ws(end_el.get_text(
-            " ", strip=True)) if end_el else ""
+        e_txt = normalize_ws(end_el.get_text(" ", strip=True)) if end_el else ""
         date_expr = f"{s_txt} - {e_txt}" if e_txt and e_txt != s_txt else s_txt
         start_dates = parse_event_dates(date_expr)
 
@@ -294,8 +285,7 @@ def parse_detail_html(html: str, url: str) -> Optional[Dict[str, Any]]:
     ticket_link = url
     t_btn = target_section.find(
         "a",
-        href=re.compile(
-            r"eventbrite|ticket|register|rsvp|tix|brownpapertickets", re.I),
+        href=re.compile(r"eventbrite|ticket|register|rsvp|tix|brownpapertickets", re.I),
     )
     if t_btn and t_btn.get("href"):
         ticket_link = resolve_url(t_btn["href"]) or url
@@ -313,28 +303,20 @@ def parse_detail_html(html: str, url: str) -> Optional[Dict[str, Any]]:
     address = DEFAULT_ADDRESS
     address_sec = target_section.find(
         "address",
-        class_=re.compile(
-            r"tribe-block__venue__address|tribe-events-address", re.I),
+        class_=re.compile(r"tribe-block__venue__address|tribe-events-address", re.I),
     )
     if address_sec:
-        street = address_sec.find(
-            "span", class_=re.compile(r"tribe-street-address", re.I))
-        locality = address_sec.find(
-            "span", class_=re.compile(r"tribe-locality", re.I))
-        region = address_sec.find(
-            ["abbr", "span"], class_=re.compile(r"tribe-region", re.I)
-        )
-        postal = address_sec.find(
-            "span", class_=re.compile(r"tribe-postal-code", re.I))
+        street = address_sec.find("span", class_=re.compile(r"tribe-street-address", re.I))
+        locality = address_sec.find("span", class_=re.compile(r"tribe-locality", re.I))
+        region = address_sec.find(["abbr", "span"], class_=re.compile(r"tribe-region", re.I))
+        postal = address_sec.find("span", class_=re.compile(r"tribe-postal-code", re.I))
 
         st_str = normalize_ws(street.get_text()) if street else ""
-        loc_str = normalize_ws(
-            locality.get_text()) if locality else "Gig Harbor"
+        loc_str = normalize_ws(locality.get_text()) if locality else "Gig Harbor"
         reg_str = normalize_ws(region.get_text()) if region else "WA"
         post_str = normalize_ws(postal.get_text()) if postal else ""
 
-        addr_parts = [p for p in [st_str, loc_str,
-                                  f"{reg_str} {post_str}".strip()] if p]
+        addr_parts = [p for p in [st_str, loc_str, f"{reg_str} {post_str}".strip()] if p]
         if addr_parts:
             address = ", ".join(addr_parts)
 
@@ -366,7 +348,7 @@ def fetch_detail_via_http(
 
 
 def scraper(max_pages: int = 5) -> pd.DataFrame:
-    """Scrapes Visit Gig Harbor events via Tribe REST API / HTTP-first + Chrome fallback."""
+    """Scrapes Visit Gig Harbor events via Tribe REST API / HTTP-first + browser fallback."""
     logger.info(
         f"[START] Scraping Visit Gig Harbor Events (scanning up to {max_pages} pages)..."
     )
@@ -383,19 +365,19 @@ def scraper(max_pages: int = 5) -> pd.DataFrame:
     except Exception:
         pass
 
-    display = None
+    disp_ctx = None
+    active_disp = None
     driver = None
     detail_urls: List[str] = []
     use_browser_listing = False
 
     def ensure_browser():
-        nonlocal display, driver
+        nonlocal disp_ctx, active_disp, driver
+        if disp_ctx is None:
+            disp_ctx = virtual_display(size=(1920, 1080))
+            active_disp = disp_ctx.__enter__()
         if driver is None:
-            from pyvirtualdisplay import Display
-
-            display = Display(visible=0, size=(1920, 1080), backend="xvfb")
-            display.start()
-            driver = create_stealth_driver()
+            driver = create_stealth_driver(headless=(active_disp is None))
         return driver
 
     try:
@@ -408,8 +390,7 @@ def scraper(max_pages: int = 5) -> pd.DataFrame:
                 if resp.status_code == 404:
                     break
                 resp.raise_for_status()
-                soup = BeautifulSoup(
-                    clean_html_source(resp.text), "html.parser")
+                soup = BeautifulSoup(clean_html_source(resp.text), "html.parser")
                 urls = extract_detail_urls_from_list(soup)
                 if not urls:
                     if page == 1:
@@ -417,8 +398,7 @@ def scraper(max_pages: int = 5) -> pd.DataFrame:
                     break
                 detail_urls.extend(urls)
             except Exception as http_err:
-                logger.warning(
-                    f"[HTTP LISTING] Page {page} failed ({http_err}).")
+                logger.warning(f"[HTTP LISTING] Page {page} failed ({http_err}).")
                 if page == 1:
                     use_browser_listing = True
                 break
@@ -443,8 +423,7 @@ def scraper(max_pages: int = 5) -> pd.DataFrame:
                     )
                 except Exception:
                     pass
-                soup = BeautifulSoup(clean_html_source(
-                    drv.page_source), "html.parser")
+                soup = BeautifulSoup(clean_html_source(drv.page_source), "html.parser")
                 urls = extract_detail_urls_from_list(soup)
                 if not urls:
                     break
@@ -463,8 +442,7 @@ def scraper(max_pages: int = 5) -> pd.DataFrame:
 
         detail_urls = sorted(set(detail_urls))
         if not detail_urls:
-            logger.warning(
-                "[PARSER WARNING] Found 0 Gig Harbor event detail URLs.")
+            logger.warning("[PARSER WARNING] Found 0 Gig Harbor event detail URLs.")
             return pd.DataFrame()
 
         logger.info(
@@ -502,8 +480,7 @@ def scraper(max_pages: int = 5) -> pd.DataFrame:
         # 4. Consolidate recurring dates for identical events
         grouped: Dict[str, Dict[str, Any]] = {}
         for rec in parsed_records:
-            key = normalize_event_group_key(
-                rec.get("external_url"), rec["title"])
+            key = normalize_event_group_key(rec.get("external_url"), rec["title"])
             if key in grouped:
                 grouped[key]["dates_set"].update(rec["start_time"])
                 continue
@@ -520,7 +497,9 @@ def scraper(max_pages: int = 5) -> pd.DataFrame:
 
     except Exception as e:
         logger.error(
-            f"[FATAL ERROR] Exception encountered during scraping loop: {e}", exc_info=True)
+            f"[FATAL ERROR] Exception encountered during scraping loop: {e}",
+            exc_info=True,
+        )
         return pd.DataFrame()
     finally:
         if driver:
@@ -529,10 +508,10 @@ def scraper(max_pages: int = 5) -> pd.DataFrame:
                 driver.quit()
             except Exception:
                 pass
-        if display:
-            logger.info("[CLEANUP] Stopping PyVirtualDisplay server...")
+        if disp_ctx is not None:
+            logger.info("[CLEANUP] Stopping virtual display context...")
             try:
-                display.stop()
+                disp_ctx.__exit__(None, None, None)
             except Exception:
                 pass
 

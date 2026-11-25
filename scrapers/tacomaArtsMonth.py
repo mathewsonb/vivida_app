@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 import html
 import logging
+import os
 import re
 import sys
 from typing import Any, Dict, List, Optional
@@ -33,9 +34,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("scrape_tacoma_arts_month")
 
-CALENDAR_ID = 54705487
+LOCAL_TZ = ZoneInfo("America/Los_Angeles")
+CALENDAR_ID = int(os.getenv("TIMELY_CALENDAR_ID") or "54705487")
 BASE_API_URL = f"https://calendar.time.ly/api/calendars/{CALENDAR_ID}/events"
-TIMELY_API_KEY = "c6e5e0363b5925b28552de8805464c66f25ba0ce"
+TIMELY_API_KEY = (
+    os.getenv("TIMELY_API_KEY")
+    or "c6e5e0363b5925b28552de8805464c66f25ba0ce"
+).strip()
 DEFAULT_VENUE = "Tacoma Arts Month"
 DEFAULT_ADDRESS = "Tacoma, WA"
 
@@ -84,16 +89,20 @@ def build_http_session(pool_size: int = 12) -> requests.Session:
     return session
 
 
+def _to_local_dt(raw_val: Any) -> pd.Timestamp:
+    dt = pd.to_datetime(raw_val, errors="coerce", format="mixed")
+    if pd.notnull(dt) and dt.tzinfo is not None:
+        dt = dt.tz_convert(LOCAL_TZ)
+    return dt
+
+
 def extract_timely_dates(item: Dict[str, Any], event_detail: Dict[str, Any]) -> List[str]:
     """Extracts [start] or [start, end] ISO dates per Vivida's 3-rule date standard."""
-    start_raw = item.get(
-        "start_datetime") or event_detail.get("start_datetime")
+    start_raw = item.get("start_datetime") or event_detail.get("start_datetime")
     end_raw = item.get("end_datetime") or event_detail.get("end_datetime")
 
-    start_dt = pd.to_datetime(
-        start_raw, errors="coerce", format="mixed") if start_raw else pd.NaT
-    end_dt = pd.to_datetime(end_raw, errors="coerce",
-                            format="mixed") if end_raw else pd.NaT
+    start_dt = _to_local_dt(start_raw) if start_raw else pd.NaT
+    end_dt = _to_local_dt(end_raw) if end_raw else pd.NaT
 
     if pd.notnull(start_dt):
         s_str = start_dt.strftime("%Y-%m-%d")
@@ -122,15 +131,15 @@ def extract_venue_and_address(
     if not venue_obj and isinstance(item.get("venue"), dict):
         venue_obj = item["venue"]
 
-    venue_name = normalize_ws(venue_obj.get(
-        "title") or venue_obj.get("name")) or DEFAULT_VENUE
+    venue_name = (
+        normalize_ws(venue_obj.get("title") or venue_obj.get("name"))
+        or DEFAULT_VENUE
+    )
 
     raw_addr = normalize_ws(venue_obj.get("address"))
     city = normalize_ws(venue_obj.get("city"))
-    state = normalize_ws(venue_obj.get("province")
-                         or venue_obj.get("state")) or "WA"
-    zip_code = normalize_ws(venue_obj.get(
-        "postal_code") or venue_obj.get("zip"))
+    state = normalize_ws(venue_obj.get("province") or venue_obj.get("state")) or "WA"
+    zip_code = normalize_ws(venue_obj.get("postal_code") or venue_obj.get("zip"))
 
     if raw_addr:
         street = raw_addr.split(",")[0].strip()
@@ -148,14 +157,19 @@ def extract_venue_and_address(
     return venue_name, address
 
 
-def extract_image_url(item: Dict[str, Any], event_detail: Dict[str, Any]) -> Optional[str]:
+def extract_image_url(
+    item: Dict[str, Any], event_detail: Dict[str, Any]
+) -> Optional[str]:
     for source in (event_detail.get("images"), item.get("images")):
         if isinstance(source, list) and source and isinstance(source[0], dict):
             sizes = source[0].get("sizes")
             if isinstance(sizes, dict):
                 for key in ("full", "large", "medium", "thumbnail"):
-                    url = sizes.get(key, {}).get("url") if isinstance(
-                        sizes.get(key), dict) else None
+                    url = (
+                        sizes.get(key, {}).get("url")
+                        if isinstance(sizes.get(key), dict)
+                        else None
+                    )
                     if url:
                         return str(url).strip()
             if source[0].get("url"):
@@ -178,8 +192,7 @@ def fetch_and_parse_event(
                 if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
                     event_detail = payload["data"]
         except Exception as err:
-            logger.debug(
-                f"Detail fetch fallback for event_id={event_id}: {err}")
+            logger.debug(f"Detail fetch fallback for event_id={event_id}: {err}")
 
     title = normalize_ws(event_detail.get("title") or item.get("title"))
     if not title:
@@ -201,8 +214,7 @@ def fetch_and_parse_event(
     description = short_desc or (big_desc[:280] if big_desc else title)
     big_desc = big_desc or description
 
-    external_url = normalize_ws(
-        event_detail.get("url") or item.get("url")) or None
+    external_url = normalize_ws(event_detail.get("url") or item.get("url")) or None
     image_url = extract_image_url(item, event_detail)
 
     ticket_link = None
@@ -231,8 +243,7 @@ def fetch_and_parse_event(
 
 def scraper(days_ahead: int = 120) -> pd.DataFrame:
     """Scrapes Tacoma Arts Month events via Time.ly JSON REST API across a rolling date window."""
-    tz = ZoneInfo("America/Los_Angeles")
-    now_local = datetime.now(tz)
+    now_local = datetime.now(LOCAL_TZ)
     start_day = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
     end_day = start_day + timedelta(days=days_ahead)
 
@@ -249,69 +260,74 @@ def scraper(days_ahead: int = 120) -> pd.DataFrame:
     seen_ids: set[Any] = set()
     page = 1
 
-    while True:
-        params = {
-            "timezone": "America/Los_Angeles",
-            "view": "tile",
-            "start_date_utc": str(start_utc),
-            "end_date_utc": str(end_utc),
-            "per_page": "200",
-            "page": str(page),
-        }
-        try:
-            resp = session.get(BASE_API_URL, params=params, timeout=20)
-            resp.raise_for_status()
-            payload = resp.json()
-        except Exception as e:
-            logger.error(
-                f"[FETCH ERROR] Time.ly API listing failed on page {page}: {e}")
-            break
+    try:
+        while True:
+            params = {
+                "timezone": "America/Los_Angeles",
+                "view": "tile",
+                "start_date_utc": str(start_utc),
+                "end_date_utc": str(end_utc),
+                "per_page": "200",
+                "page": str(page),
+            }
+            try:
+                resp = session.get(BASE_API_URL, params=params, timeout=20)
+                resp.raise_for_status()
+                payload = resp.json()
+            except Exception as e:
+                logger.error(
+                    f"[FETCH ERROR] Time.ly API listing failed on page {page}: {e}"
+                )
+                break
 
-        page_items = (
-            payload.get("data", {}).get("items", [])
-            if isinstance(payload, dict)
-            else (payload if isinstance(payload, list) else [])
-        )
-        if not page_items:
-            break
+            page_items = (
+                payload.get("data", {}).get("items", [])
+                if isinstance(payload, dict)
+                else (payload if isinstance(payload, list) else [])
+            )
+            if not page_items:
+                break
 
-        new_count = 0
-        for it in page_items:
-            eid = it.get(
-                "id") or f"{it.get('title')}_{it.get('start_datetime')}"
-            if eid not in seen_ids:
-                seen_ids.add(eid)
-                items.append(it)
-                new_count += 1
+            new_count = 0
+            for it in page_items:
+                eid = it.get("id") or f"{it.get('title')}_{it.get('start_datetime')}"
+                if eid not in seen_ids:
+                    seen_ids.add(eid)
+                    items.append(it)
+                    new_count += 1
+
+            logger.info(
+                f"[LISTING PAGE {page}] Retrieved {new_count} unique event items."
+            )
+            if new_count == 0 or len(page_items) < 200:
+                break
+            page += 1
+
+        if not items:
+            logger.warning("[PARSER WARNING] No events returned from Time.ly API.")
+            return pd.DataFrame()
 
         logger.info(
-            f"[LISTING PAGE {page}] Retrieved {new_count} unique event items.")
-        if new_count == 0 or len(page_items) < 200:
-            break
-        page += 1
+            f"Batch-fetching {len(items)} Time.ly event detail payloads concurrently (workers=10)..."
+        )
 
-    if not items:
-        logger.warning("[PARSER WARNING] No events returned from Time.ly API.")
-        return pd.DataFrame()
+        raw_records: List[Dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [
+                executor.submit(fetch_and_parse_event, session, item)
+                for item in items
+            ]
+            for fut in as_completed(futures):
+                rec = fut.result()
+                if rec:
+                    raw_records.append(rec)
 
-    logger.info(
-        f"Batch-fetching {len(items)} Time.ly event detail payloads concurrently (workers=10)..."
-    )
-
-    raw_records: List[Dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [
-            executor.submit(fetch_and_parse_event, session, item)
-            for item in items
-        ]
-        for fut in as_completed(futures):
-            rec = fut.result()
-            if rec:
-                raw_records.append(rec)
-
-    logger.info(
-        f"[PARSER SUCCESS] Normalized {len(raw_records)} valid Tacoma Arts Month records.")
-    return pd.DataFrame(raw_records) if raw_records else pd.DataFrame()
+        logger.info(
+            f"[PARSER SUCCESS] Normalized {len(raw_records)} valid Tacoma Arts Month records."
+        )
+        return pd.DataFrame(raw_records) if raw_records else pd.DataFrame()
+    finally:
+        session.close()
 
 
 if __name__ == "__main__":
@@ -323,9 +339,11 @@ if __name__ == "__main__":
         success = pipeline.run_standalone_pipeline(raw_df)
         if success:
             logger.info(
-                "[PIPELINE SUCCESS] Tacoma Arts Month scraper completed successfully.")
+                "[PIPELINE SUCCESS] Tacoma Arts Month scraper completed successfully."
+            )
         else:
             logger.error(
-                "[PIPELINE ERROR] Tacoma Arts Month scraper pipeline execution reported errors.")
+                "[PIPELINE ERROR] Tacoma Arts Month scraper pipeline execution reported errors."
+            )
     else:
         logger.warning("[EXIT] No events scraped. Pipeline handoff skipped.")

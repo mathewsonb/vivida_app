@@ -2,14 +2,12 @@
 emeraldQueenCasino.py
 Autonomous Scraper for Emerald Queen Casino (Tacoma, WA).
 Uses HTTP-first MotoCMS listing + concurrent HTTP detail enrichment (workers=10)
-with lazy Xvfb/Chrome hydration fallback and centralized parse_event_dates normalization.
+with lazy cross-platform browser hydration fallback and centralized parse_event_dates normalization.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import glob
 import logging
 import re
-import shutil
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,9 +21,10 @@ from urllib3.util.retry import Retry
 from vivida_etl import (
     VividaIngestionPipeline,
     clean_html_source,
+    create_stealth_driver,
     fetch_event_text,
     parse_event_dates,
-    create_stealth_driver
+    virtual_display,
 )
 
 logging.basicConfig(
@@ -148,8 +147,7 @@ def parse_detail_html(
             image_url = resolve_url(og_img["content"])
 
     rich_text = fetch_event_text(content_root)
-    big_desc = normalize_ws(rich_text) if rich_text else (
-        card_desc or card_title)
+    big_desc = normalize_ws(rich_text) if rich_text else (card_desc or card_title)
 
     return ticket_link, big_desc, image_url
 
@@ -200,10 +198,12 @@ def scraper() -> pd.DataFrame:
     soup = BeautifulSoup(cleaned_main_html, "html.parser")
 
     target_table = soup.find(
-        "section", class_=re.compile(r"content.*moto-section"))
+        "section", class_=re.compile(r"content.*moto-section")
+    )
     if not target_table:
         logger.warning(
-            "[PARSER WARNING] Could not locate target section container on EQC tickets page.")
+            "[PARSER WARNING] Could not locate target section container on EQC tickets page."
+        )
         return pd.DataFrame()
 
     event_items = target_table.find_all(
@@ -211,19 +211,25 @@ def scraper() -> pd.DataFrame:
         class_=re.compile(r"moto-widget-row.*moto-spacing-top-medium"),
     )
     logger.info(
-        f"[PARSER] Found {len(event_items)} candidate rows on EQC tickets page.")
+        f"[PARSER] Found {len(event_items)} candidate rows on EQC tickets page."
+    )
 
     staged_items: List[Dict[str, Any]] = []
     for event in event_items:
         details = event.find_all(
-            "div", class_=re.compile(r"moto-widget-text-content"))
-        title = normalize_ws(details[0].get_text(
-            " ", strip=True)) if len(details) >= 1 else ""
+            "div", class_=re.compile(r"moto-widget-text-content")
+        )
+        title = (
+            normalize_ws(details[0].get_text(" ", strip=True))
+            if len(details) >= 1
+            else ""
+        )
         if not title:
             continue
 
-        raw_date_str = details[1].get_text(
-            " ", strip=True) if len(details) >= 2 else ""
+        raw_date_str = (
+            details[1].get_text(" ", strip=True) if len(details) >= 2 else ""
+        )
         start_dates = parse_eqc_date_block(raw_date_str)
         if not start_dates:
             continue
@@ -267,7 +273,8 @@ def scraper() -> pd.DataFrame:
 
     if not staged_items:
         logger.warning(
-            "[PARSER WARNING] 0 valid events extracted from EQC tickets page.")
+            "[PARSER WARNING] 0 valid events extracted from EQC tickets page."
+        )
         return pd.DataFrame()
 
     logger.info(
@@ -291,50 +298,43 @@ def scraper() -> pd.DataFrame:
                 fallback_items.append(updated_item)
 
     if fallback_items:
-        display = None
         driver = None
         try:
-            from pyvirtualdisplay import Display
+            with virtual_display(size=(1920, 1080)) as disp:
+                driver = create_stealth_driver(headless=(disp is None))
 
-            display = Display(visible=0, size=(1920, 1080), backend="xvfb")
-            display.start()
-            driver = create_stealth_driver()
-
-            for item in fallback_items:
-                detail_url = item.get("external_url")
-                if detail_url:
-                    try:
-                        driver.get(detail_url)
-                        time.sleep(1.5)
-                        ticket_link, big_desc, image_url = parse_detail_html(
-                            driver.page_source,
-                            item.get("description"),
-                            item["title"],
-                            detail_url,
-                            item.get("image_url"),
-                        )
-                        item["ticket_link"] = ticket_link
-                        item["big_desc"] = big_desc
-                        if not item.get("description"):
-                            item["description"] = big_desc[:250]
-                        item["image_url"] = image_url
-                    except Exception as fb_err:
-                        logger.warning(
-                            f"[FALLBACK WARN] Failed {detail_url}: {fb_err}")
-                enriched_items.append(item)
+                for item in fallback_items:
+                    detail_url = item.get("external_url")
+                    if detail_url:
+                        try:
+                            driver.get(detail_url)
+                            time.sleep(1.5)
+                            ticket_link, big_desc, image_url = parse_detail_html(
+                                driver.page_source,
+                                item.get("description"),
+                                item["title"],
+                                detail_url,
+                                item.get("image_url"),
+                            )
+                            item["ticket_link"] = ticket_link
+                            item["big_desc"] = big_desc
+                            if not item.get("description"):
+                                item["description"] = big_desc[:250]
+                            item["image_url"] = image_url
+                        except Exception as fb_err:
+                            logger.warning(
+                                f"[FALLBACK WARN] Failed {detail_url}: {fb_err}"
+                            )
+                    enriched_items.append(item)
         except Exception as err:
             logger.warning(
-                f"[FALLBACK WARN] Headless Chrome fallback unavailable ({err}); keeping card data.")
+                f"[FALLBACK WARN] Browser fallback unavailable ({err}); keeping card data."
+            )
             enriched_items.extend(fallback_items)
         finally:
             if driver:
                 try:
                     driver.quit()
-                except Exception:
-                    pass
-            if display:
-                try:
-                    display.stop()
                 except Exception:
                     pass
 
@@ -366,9 +366,11 @@ if __name__ == "__main__":
         success = pipeline.run_standalone_pipeline(raw_df)
         if success:
             logger.info(
-                "[PIPELINE SUCCESS] EQC scraper execution completed successfully.")
+                "[PIPELINE SUCCESS] EQC scraper execution completed successfully."
+            )
         else:
             logger.error(
-                "[PIPELINE ERROR] EQC scraper pipeline execution reported errors.")
+                "[PIPELINE ERROR] EQC scraper pipeline execution reported errors."
+            )
     else:
         logger.warning("[EXIT] No events scraped. Exiting task.")

@@ -6,6 +6,7 @@ and routes directly to Supabase via VividaIngestionPipeline.
 """
 
 import logging
+import os
 import re
 import sys
 from typing import Any, Dict, List, Optional
@@ -32,9 +33,10 @@ logger = logging.getLogger("scrape_proctor_district")
 
 BASE_URL = "https://www.proctordistrict.com"
 API_URL = (
-    "https://base44.app/api/apps/6911cf52c9f849cb61177089/entities/Event"
+    os.getenv("PROCTOR_API_URL")
+    or "https://base44.app/api/apps/6911cf52c9f849cb61177089/entities/Event"
     "?sort=event_date&limit=500"
-)
+).strip()
 DEFAULT_VENUE = "Proctor District"
 DEFAULT_ADDRESS = "Proctor District, Tacoma, WA 98407"
 
@@ -73,8 +75,7 @@ def clean_html_text(raw_text: Optional[str]) -> Optional[str]:
     if not raw_text:
         return None
     soup = BeautifulSoup(clean_html_source(str(raw_text)), "html.parser")
-    extracted = fetch_event_text(soup) or soup.get_text(
-        separator=" ", strip=True)
+    extracted = fetch_event_text(soup) or soup.get_text(separator=" ", strip=True)
     cleaned = normalize_ws(extracted)
     return cleaned if cleaned else None
 
@@ -84,10 +85,8 @@ def parse_address_string(loc_raw: Optional[str]) -> str:
     if not loc_raw or pd.isna(loc_raw):
         return DEFAULT_ADDRESS
 
-    # Split on em-dash/en-dash or space-padded hyphen (e.g. "Venue - 2602 N Proctor St")
     parts = re.split(r"\s+[—–-]\s+|[—–]", str(loc_raw))
-    cleaned = normalize_ws(
-        parts[-1]) if len(parts) > 1 else normalize_ws(str(loc_raw))
+    cleaned = normalize_ws(parts[-1]) if len(parts) > 1 else normalize_ws(str(loc_raw))
 
     if not cleaned:
         return DEFAULT_ADDRESS
@@ -113,16 +112,16 @@ def parse_record_dates(record: Dict[str, Any], start_of_today: pd.Timestamp) -> 
         start_ts = start_ts.tz_convert("America/Los_Angeles")
 
     raw_end = record.get("end_date")
-    end_ts = pd.to_datetime(raw_end, errors="coerce",
-                            format="mixed") if raw_end else pd.NaT
+    end_ts = (
+        pd.to_datetime(raw_end, errors="coerce", format="mixed") if raw_end else pd.NaT
+    )
     if pd.notnull(end_ts):
         if end_ts.tzinfo is None:
             end_ts = end_ts.tz_localize("America/Los_Angeles")
         else:
             end_ts = end_ts.tz_convert("America/Los_Angeles")
 
-    effective_end = end_ts if pd.notnull(
-        end_ts) and end_ts >= start_ts else start_ts
+    effective_end = end_ts if pd.notnull(end_ts) and end_ts >= start_ts else start_ts
     if effective_end < start_of_today:
         return []
 
@@ -149,8 +148,7 @@ def build_http_session() -> requests.Session:
 
 def scraper() -> pd.DataFrame:
     """Queries Base44 REST API for Proctor District events and returns normalized DataFrame."""
-    logger.info(
-        "[START] Executing Base44 REST API fetch for Proctor District...")
+    logger.info("[START] Executing Base44 REST API fetch for Proctor District...")
 
     session = build_http_session()
     try:
@@ -160,6 +158,8 @@ def scraper() -> pd.DataFrame:
     except Exception as e:
         logger.error(f"[API ERROR] Failed to query Base44 API endpoint: {e}")
         return pd.DataFrame()
+    finally:
+        session.close()
 
     records = (
         payload
@@ -167,7 +167,8 @@ def scraper() -> pd.DataFrame:
         else payload.get("data") or payload.get("items") or []
     )
     logger.info(
-        f"[PARSER SUCCESS] Retrieved {len(records)} raw event records from Base44 API.")
+        f"[PARSER SUCCESS] Retrieved {len(records)} raw event records from Base44 API."
+    )
 
     start_of_today = pd.Timestamp.now(tz="America/Los_Angeles").floor("D")
     grouped: Dict[tuple, Dict[str, Any]] = {}
@@ -184,8 +185,9 @@ def scraper() -> pd.DataFrame:
         if not date_list:
             continue
 
-        clean_venue = normalize_ws(
-            str(record.get("business_name") or "")) or DEFAULT_VENUE
+        clean_venue = (
+            normalize_ws(str(record.get("business_name") or "")) or DEFAULT_VENUE
+        )
         group_key = (clean_title.lower(), clean_venue.lower())
 
         if group_key in grouped:
@@ -219,7 +221,8 @@ def scraper() -> pd.DataFrame:
         events_data.append(entry)
 
     logger.info(
-        f"[NORMALIZED] Prepared {len(events_data)} unique Proctor District event records.")
+        f"[NORMALIZED] Prepared {len(events_data)} unique Proctor District event records."
+    )
     return pd.DataFrame(events_data)
 
 

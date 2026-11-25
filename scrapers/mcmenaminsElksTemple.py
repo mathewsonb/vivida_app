@@ -1,16 +1,14 @@
 """
 mcmenaminsElksTemple.py
 Autonomous Scraper for McMenamins Elks Temple / Spanish Ballroom (Tacoma, WA).
-Uses HTTP-first listing with automatic Xvfb/Chrome hydration fallback,
+Uses HTTP-first listing with automatic cross-platform browser hydration fallback,
 in-card description extraction + rate-limit-safe detail fetching (workers=3),
 and centralized parse_event_dates normalization.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import glob
 import logging
 import re
-import shutil
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -24,9 +22,10 @@ from urllib3.util.retry import Retry
 from vivida_etl import (
     VividaIngestionPipeline,
     clean_html_source,
+    create_stealth_driver,
     fetch_event_text,
     parse_event_dates,
-    create_stealth_driver
+    virtual_display,
 )
 
 logging.basicConfig(
@@ -92,7 +91,8 @@ def extract_css_bg_image(style_attr: Optional[str]) -> Optional[str]:
     if not style_attr:
         return None
     match = re.search(
-        r'url\((?:["\']?)(.*?)(?:["\']?)\)', style_attr, re.IGNORECASE)
+        r'url\((?:["\']?)(.*?)(?:["\']?)\)', style_attr, re.IGNORECASE
+    )
     if match:
         return resolve_url(match.group(1).strip())
     return None
@@ -128,7 +128,10 @@ def find_calendar_items(soup: BeautifulSoup) -> List[BeautifulSoup]:
 def extract_card_description(event: BeautifulSoup, title: str) -> Optional[str]:
     """Extracts inline summary/subhead/notes directly from the calendar card if present."""
     snippets: List[str] = []
-    for p in event.find_all(["p", "div"], class_=re.compile(r"subhead|subtitle|desc|summary|info|doors|age", re.I)):
+    for p in event.find_all(
+        ["p", "div"],
+        class_=re.compile(r"subhead|subtitle|desc|summary|info|doors|age", re.I),
+    ):
         txt = normalize_ws(p.get_text(" ", strip=True))
         if txt and txt.lower() != title.lower() and txt not in snippets:
             snippets.append(txt)
@@ -175,19 +178,20 @@ def parse_detail_html(
 
     dates = current_dates
     if not dates:
-        time_el = container.find("p", class_=re.compile(r"uk-panel-time|date", re.I)) or det_soup.find(
-            "meta", property="event:start_time"
-        )
+        time_el = container.find(
+            "p", class_=re.compile(r"uk-panel-time|date", re.I)
+        ) or det_soup.find("meta", property="event:start_time")
         if time_el:
-            raw_dt = time_el.get(
-                "content") or time_el.get_text(" ", strip=True)
+            raw_dt = time_el.get("content") or time_el.get_text(" ", strip=True)
             dates = parse_event_dates(normalize_ws(raw_dt))
 
     ticket_link = current_ticket
     if not ticket_link:
         t_btn = container.find(
             ["a", "button"], href=re.compile(r"etix|ticket|buy", re.I)
-        ) or container.find(["a", "button"], class_=re.compile(r"uk-button-primary", re.I))
+        ) or container.find(
+            ["a", "button"], class_=re.compile(r"uk-button-primary", re.I)
+        )
         if t_btn:
             ticket_link = extract_ticket_url(t_btn)
 
@@ -198,8 +202,7 @@ def parse_detail_html(
             image_url = resolve_url(og_img["content"])
 
     rich_text = fetch_event_text(container)
-    big_desc = normalize_ws(rich_text) if rich_text else (
-        card_desc or card_title)
+    big_desc = normalize_ws(rich_text) if rich_text else (card_desc or card_title)
     description = card_desc or (big_desc[:250] if big_desc else card_title)
 
     return dates, description, big_desc, ticket_link or detail_url, image_url
@@ -235,7 +238,6 @@ def fetch_detail_via_http(
         item["image_url"] = image_url
         return item, True
     except Exception:
-        # Keep valid card-level metadata rather than triggering slow Chrome fallback on rate-limit
         if not item.get("ticket_link"):
             item["ticket_link"] = detail_url
         return item, False
@@ -246,18 +248,18 @@ def scraper() -> pd.DataFrame:
     logger.info(f"[START] Scraping McMenamins Elks Temple: {TARGET_URL}")
     session = build_http_session(pool_size=6)
 
-    display = None
+    disp_ctx = None
+    active_disp = None
     driver = None
     event_items: List[BeautifulSoup] = []
 
     def ensure_browser():
-        nonlocal display, driver
+        nonlocal disp_ctx, active_disp, driver
+        if disp_ctx is None:
+            disp_ctx = virtual_display(size=(1920, 1080))
+            active_disp = disp_ctx.__enter__()
         if driver is None:
-            from pyvirtualdisplay import Display
-
-            display = Display(visible=0, size=(1920, 1080), backend="xvfb")
-            display.start()
-            driver = create_stealth_driver()
+            driver = create_stealth_driver(headless=(active_disp is None))
         return driver
 
     try:
@@ -265,8 +267,7 @@ def scraper() -> pd.DataFrame:
         try:
             resp = session.get(TARGET_URL, timeout=15)
             resp.raise_for_status()
-            soup_http = BeautifulSoup(
-                clean_html_source(resp.text), "html.parser")
+            soup_http = BeautifulSoup(clean_html_source(resp.text), "html.parser")
             candidates = find_calendar_items(soup_http)
             if candidates:
                 event_items = candidates
@@ -275,11 +276,11 @@ def scraper() -> pd.DataFrame:
                 )
             else:
                 logger.info(
-                    "[HTTP LISTING] Page shell loaded with 0 static event cards; launching Xvfb + Chrome..."
+                    "[HTTP LISTING] Page shell loaded with 0 static event cards; launching browser fallback..."
                 )
         except Exception as http_err:
             logger.warning(
-                f"[HTTP LISTING] Failed ({http_err}); launching Xvfb + Chrome fallback..."
+                f"[HTTP LISTING] Failed ({http_err}); launching browser fallback..."
             )
 
         if not event_items:
@@ -300,16 +301,17 @@ def scraper() -> pd.DataFrame:
             time.sleep(2)
 
             soup_browser = BeautifulSoup(
-                clean_html_source(drv.page_source), "html.parser")
+                clean_html_source(drv.page_source), "html.parser"
+            )
             event_items = find_calendar_items(soup_browser)
 
         if not event_items:
             logger.warning(
-                "[PARSER WARNING] Found 0 event cards matching class pattern 'calendar-item'.")
+                "[PARSER WARNING] Found 0 event cards matching class pattern 'calendar-item'."
+            )
             return pd.DataFrame()
 
-        logger.info(
-            f"[PARSER SUCCESS] Found {len(event_items)} McMenamins event cards.")
+        logger.info(f"[PARSER SUCCESS] Found {len(event_items)} McMenamins event cards.")
 
         # 2. Extract card metadata and consolidate multi-night runs
         grouped_items: Dict[str, Dict[str, Any]] = {}
@@ -317,14 +319,14 @@ def scraper() -> pd.DataFrame:
         for idx, event in enumerate(event_items, start=1):
             try:
                 h3_tag = event.find("h3")
-                title = normalize_ws(h3_tag.get_text(
-                    " ", strip=True)) if h3_tag else ""
+                title = (
+                    normalize_ws(h3_tag.get_text(" ", strip=True)) if h3_tag else ""
+                )
                 if not title:
                     continue
 
                 start_time_list: List[str] = []
-                time_p = event.find(
-                    "p", class_=re.compile(r"uk-panel-time", re.I))
+                time_p = event.find("p", class_=re.compile(r"uk-panel-time", re.I))
                 if time_p:
                     start_time_list = parse_event_dates(
                         normalize_ws(time_p.get_text(" ", strip=True))
@@ -335,14 +337,12 @@ def scraper() -> pd.DataFrame:
                 dedup_key = detail_url or title.lower()
 
                 if dedup_key in grouped_items:
-                    grouped_items[dedup_key]["dates_set"].update(
-                        start_time_list)
+                    grouped_items[dedup_key]["dates_set"].update(start_time_list)
                     continue
 
                 card_desc = extract_card_description(event, title)
 
-                panel_div = event.find(
-                    "div", class_=re.compile(r"uk-panel", re.I))
+                panel_div = event.find("div", class_=re.compile(r"uk-panel", re.I))
                 image_url = (
                     extract_css_bg_image(panel_div["style"])
                     if panel_div and panel_div.get("style")
@@ -352,8 +352,7 @@ def scraper() -> pd.DataFrame:
                 ticket_btn = event.find(
                     ["button", "a"], class_=re.compile(r"uk-button-primary", re.I)
                 )
-                ticket_link = extract_ticket_url(
-                    ticket_btn) if ticket_btn else None
+                ticket_link = extract_ticket_url(ticket_btn) if ticket_btn else None
 
                 grouped_items[dedup_key] = {
                     "venue_name": DEFAULT_VENUE,
@@ -412,7 +411,8 @@ def scraper() -> pd.DataFrame:
             item.pop("_card_desc", None)
             if not item.get("start_time"):
                 logger.warning(
-                    f"[SKIP] No valid dates parsed for '{item.get('title')}'.")
+                    f"[SKIP] No valid dates parsed for '{item.get('title')}'."
+                )
                 continue
             raw_records.append(item)
 
@@ -420,7 +420,9 @@ def scraper() -> pd.DataFrame:
 
     except Exception as e:
         logger.error(
-            f"[FATAL ERROR] Exception encountered during scraping loop: {e}", exc_info=True)
+            f"[FATAL ERROR] Exception encountered during scraping loop: {e}",
+            exc_info=True,
+        )
         return pd.DataFrame()
     finally:
         if driver:
@@ -429,10 +431,10 @@ def scraper() -> pd.DataFrame:
                 driver.quit()
             except Exception:
                 pass
-        if display:
-            logger.info("[CLEANUP] Stopping PyVirtualDisplay server...")
+        if disp_ctx is not None:
+            logger.info("[CLEANUP] Stopping virtual display context...")
             try:
-                display.stop()
+                disp_ctx.__exit__(None, None, None)
             except Exception:
                 pass
 
@@ -447,9 +449,11 @@ if __name__ == "__main__":
 
         if success:
             logger.info(
-                "[PIPELINE SUCCESS] McMenamins scraper pipeline execution completed successfully.")
+                "[PIPELINE SUCCESS] McMenamins scraper pipeline execution completed successfully."
+            )
         else:
             logger.error(
-                "[PIPELINE ERROR] McMenamins scraper pipeline execution reported errors.")
+                "[PIPELINE ERROR] McMenamins scraper pipeline execution reported errors."
+            )
     else:
         logger.warning("[EXIT] No events scraped. Pipeline handoff skipped.")

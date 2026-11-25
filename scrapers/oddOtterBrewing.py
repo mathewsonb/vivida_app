@@ -5,13 +5,18 @@ Fetches events via Google Calendar v3 API and routes directly to Supabase.
 """
 
 import logging
+import os
 import re
 import sys
 from typing import List, Optional
+from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from vivida_etl import (
     VividaIngestionPipeline,
@@ -25,8 +30,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger("scrape_odd_otter")
 
-CALENDAR_ID = "oddotterevents@gmail.com"
-API_KEY = "AIzaSyDOtGM5jr8bNp1utVpG2_gSRH03RNGBkI8"
+LOCAL_TZ = ZoneInfo("America/Los_Angeles")
+CALENDAR_ID = (
+    os.getenv("ODDOTTER_CALENDAR_ID") or "oddotterevents@gmail.com"
+).strip()
+API_KEY = (
+    os.getenv("GOOGLE_CALENDAR_API_KEY")
+    or "AIzaSyDOtGM5jr8bNp1utVpG2_gSRH03RNGBkI8"
+).strip()
 DEFAULT_VENUE = "Odd Otter Brewing Company"
 DEFAULT_ADDRESS = "716 Pacific Ave, Tacoma, WA 98402"
 VENUE_URL = "https://oddotterbeer.com/"
@@ -53,6 +64,13 @@ def extract_clean_text_from_html(html_content: Optional[str]) -> Optional[str]:
     return normalize_whitespace(soup.get_text(separator=" ", strip=True))
 
 
+def _to_local_timestamp(raw_val: str) -> pd.Timestamp:
+    dt = pd.to_datetime(raw_val, errors="coerce")
+    if pd.notnull(dt) and dt.tzinfo is not None:
+        dt = dt.tz_convert(LOCAL_TZ)
+    return dt
+
+
 def parse_gcal_dates(start_obj: dict, end_obj: dict) -> List[str]:
     """
     Normalizes Google Calendar start/end objects into flat YYYY-MM-DD strings
@@ -65,14 +83,14 @@ def parse_gcal_dates(start_obj: dict, end_obj: dict) -> List[str]:
     if not raw_start:
         return []
 
-    dt_start = pd.to_datetime(raw_start, errors="coerce")
+    dt_start = _to_local_timestamp(str(raw_start))
     if pd.isna(dt_start):
         return parse_event_dates(raw_start)
 
     start_iso = dt_start.strftime("%Y-%m-%d")
 
     if raw_end:
-        dt_end = pd.to_datetime(raw_end, errors="coerce")
+        dt_end = _to_local_timestamp(str(raw_end))
         if pd.notnull(dt_end):
             # Google Calendar all-day end.date is exclusive (e.g., 1-day event on Nov 21 ends Nov 22)
             if is_all_day:
@@ -90,44 +108,64 @@ def parse_gcal_dates(start_obj: dict, end_obj: dict) -> List[str]:
     return parse_event_dates(start_iso)
 
 
+def _build_session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update(
+        {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+            )
+        }
+    )
+    retries = Retry(
+        total=2,
+        backoff_factor=0.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
 def scraper(days_ahead: int = 30) -> pd.DataFrame:
     """Queries Google Calendar v3 API for Odd Otter events and returns structured DataFrame."""
     logger.info("Starting Odd Otter Brewing Google Calendar API fetch...")
 
     now = pd.Timestamp.now(tz="UTC")
     time_min = now.strftime("%Y-%m-%dT00:00:00Z")
-    time_max = (now + pd.Timedelta(days=days_ahead)
-                ).strftime("%Y-%m-%dT23:59:59Z")
+    time_max = (now + pd.Timedelta(days=days_ahead)).strftime("%Y-%m-%dT23:59:59Z")
     limit = 250
 
-    api_url = (
-        f"https://clients6.google.com/calendar/v3/calendars/{CALENDAR_ID}/events"
-        f"?calendarId={CALENDAR_ID}"
-        f"&singleEvents=true"
-        f"&orderBy=startTime"
-        f"&timeZone=America%2FLos_Angeles"
-        f"&maxResults={limit}"
-        f"&sanitizeHtml=true"
-        f"&timeMin={time_min}"
-        f"&timeMax={time_max}"
-        f"&key={API_KEY}"
-    )
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    encoded_cal_id = quote(CALENDAR_ID, safe="")
+    api_url = f"https://clients6.google.com/calendar/v3/calendars/{encoded_cal_id}/events"
+    params = {
+        "calendarId": CALENDAR_ID,
+        "singleEvents": "true",
+        "orderBy": "startTime",
+        "timeZone": "America/Los_Angeles",
+        "maxResults": limit,
+        "sanitizeHtml": "true",
+        "timeMin": time_min,
+        "timeMax": time_max,
+        "key": API_KEY,
     }
 
+    session = _build_session()
     try:
-        response = requests.get(api_url, headers=headers, timeout=15)
+        response = session.get(api_url, params=params, timeout=15)
         response.raise_for_status()
         payload = response.json()
     except Exception as e:
         logger.error(f"Failed to query Google Calendar API endpoint: {e}")
         return pd.DataFrame()
+    finally:
+        session.close()
 
     items = payload.get("items", [])
-    logger.info(
-        f"Retrieved {len(items)} event items from Google Calendar API.")
+    logger.info(f"Retrieved {len(items)} event items from Google Calendar API.")
 
     events_data = []
 
@@ -177,10 +215,8 @@ if __name__ == "__main__":
         pipeline = VividaIngestionPipeline(table_name="events")
         success = pipeline.run_standalone_pipeline(raw_df)
         if success:
-            logger.info(
-                "Odd Otter Brewing scraper execution completed successfully.")
+            logger.info("Odd Otter Brewing scraper execution completed successfully.")
         else:
-            logger.error(
-                "Odd Otter Brewing scraper pipeline execution reported errors.")
+            logger.error("Odd Otter Brewing scraper pipeline execution reported errors.")
     else:
         logger.warning("No events scraped. Exiting task.")

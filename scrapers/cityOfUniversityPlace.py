@@ -2,15 +2,13 @@
 cityOfUniversityPlace.py
 Autonomous Scraper for City of University Place (WA) Events (CivicPlus).
 Uses HTTP-first calendar listing + concurrent detail fetching (workers=10)
-with lazy Xvfb/Chrome hydration fallback and centralized parse_event_dates normalization.
+with lazy cross-platform browser hydration fallback and centralized parse_event_dates normalization.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import glob
 import json
 import logging
 import re
-import shutil
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -25,9 +23,10 @@ from urllib3.util.retry import Retry
 from vivida_etl import (
     VividaIngestionPipeline,
     clean_html_source,
+    create_stealth_driver,
     fetch_event_text,
     parse_event_dates,
-    create_stealth_driver
+    virtual_display,
 )
 
 logging.basicConfig(
@@ -141,8 +140,7 @@ def extract_listing_candidates(soup: BeautifulSoup) -> List[Dict[str, Any]]:
         eid_anchors = target_section.find_all(
             "a", href=re.compile(r"Calendar\.aspx\?.*EID=", re.I)
         )
-        event_items = [a.find_parent(
-            ["li", "tr", "div"]) or a for a in eid_anchors]
+        event_items = [a.find_parent(["li", "tr", "div"]) or a for a in eid_anchors]
 
     for event in event_items:
         anchors = (
@@ -167,8 +165,10 @@ def extract_listing_candidates(soup: BeautifulSoup) -> List[Dict[str, Any]]:
         # If all anchors had generic text (e.g., "View Details"), check heading tags inside the card
         if not chosen_anchor and anchors:
             chosen_anchor = anchors[0]
-            heading = event.find(["h2", "h3", "h4", "strong", "span"], class_=re.compile(
-                r"title|name|header", re.I)) or event.find(["h2", "h3"])
+            heading = event.find(
+                ["h2", "h3", "h4", "strong", "span"],
+                class_=re.compile(r"title|name|header", re.I),
+            ) or event.find(["h2", "h3"])
             if heading:
                 cand_title = normalize_ws(heading.get_text(" ", strip=True))
                 if is_valid_event_title(cand_title):
@@ -245,9 +245,7 @@ def parse_detail_html(
                         jsonld_dates = sorted(set([s_dates[0], e_dates[-1]]))
                     else:
                         jsonld_dates = s_dates
-                jsonld_desc = normalize_ws(
-                    str(obj.get("description") or "")
-                ) or None
+                jsonld_desc = normalize_ws(str(obj.get("description") or "")) or None
                 img = obj.get("image")
                 if isinstance(img, list) and img:
                     img = img[0]
@@ -256,18 +254,13 @@ def parse_detail_html(
                 jsonld_image = resolve_url(img)
                 loc = obj.get("location")
                 if isinstance(loc, dict):
-                    jsonld_venue = normalize_ws(
-                        str(loc.get("name") or "")
-                    ) or None
+                    jsonld_venue = normalize_ws(str(loc.get("name") or "")) or None
                     addr_obj = loc.get("address")
                     if isinstance(addr_obj, dict):
                         parts = [
-                            normalize_ws(
-                                str(addr_obj.get("streetAddress") or "")),
-                            normalize_ws(
-                                str(addr_obj.get("addressLocality") or "")),
-                            f"{normalize_ws(str(addr_obj.get('addressRegion') or 'WA'))} {normalize_ws(str(addr_obj.get('postalCode') or ''))}".strip(
-                            ),
+                            normalize_ws(str(addr_obj.get("streetAddress") or "")),
+                            normalize_ws(str(addr_obj.get("addressLocality") or "")),
+                            f"{normalize_ws(str(addr_obj.get('addressRegion') or 'WA'))} {normalize_ws(str(addr_obj.get('postalCode') or ''))}".strip(),
                         ]
                         clean_parts = [p for p in parts if p]
                         if clean_parts:
@@ -324,10 +317,12 @@ def parse_detail_html(
         sd_el = det_soup.find(attrs={"itemprop": "startDate"})
         ed_el = det_soup.find(attrs={"itemprop": "endDate"})
         if sd_el:
-            s_val = normalize_ws(sd_el.get("content")
-                                 or sd_el.get_text(" ", strip=True))
-            e_val = normalize_ws(ed_el.get("content") or ed_el.get_text(
-                " ", strip=True)) if ed_el else ""
+            s_val = normalize_ws(sd_el.get("content") or sd_el.get_text(" ", strip=True))
+            e_val = (
+                normalize_ws(ed_el.get("content") or ed_el.get_text(" ", strip=True))
+                if ed_el
+                else ""
+            )
             s_dates = parse_event_dates(s_val)
             e_dates = parse_event_dates(e_val) if e_val else []
             if s_dates and e_dates and e_dates[-1] > s_dates[0]:
@@ -368,8 +363,7 @@ def parse_detail_html(
         zip_el = addr_soup.find(attrs={"itemprop": "postalCode"})
         if street_el and normalize_ws(street_el.get_text()):
             st = normalize_ws(street_el.get_text())
-            ct = normalize_ws(city_el.get_text()
-                              ) if city_el else "University Place"
+            ct = normalize_ws(city_el.get_text()) if city_el else "University Place"
             zp = normalize_ws(zip_el.get_text()) if zip_el else ""
             address = f"{st}, {ct}, WA {zp}".strip()
         elif not jsonld_addr:
@@ -453,18 +447,18 @@ def scraper() -> pd.DataFrame:
     logger.info(f"[START] Scraping City of University Place: {TARGET_URL}")
     session = build_http_session(pool_size=12)
 
-    display = None
+    disp_ctx = None
+    active_disp = None
     driver = None
     candidates: List[Dict[str, Any]] = []
 
     def ensure_browser():
-        nonlocal display, driver
+        nonlocal disp_ctx, active_disp, driver
+        if disp_ctx is None:
+            disp_ctx = virtual_display(size=(1920, 1080))
+            active_disp = disp_ctx.__enter__()
         if driver is None:
-            from pyvirtualdisplay import Display
-
-            display = Display(visible=0, size=(1920, 1080), backend="xvfb")
-            display.start()
-            driver = create_stealth_driver()
+            driver = create_stealth_driver(headless=(active_disp is None))
         return driver
 
     try:
@@ -484,18 +478,16 @@ def scraper() -> pd.DataFrame:
                     )
                     break
             except Exception as http_err:
-                logger.warning(
-                    f"[HTTP LISTING] Failed {list_url} ({http_err})."
-                )
+                logger.warning(f"[HTTP LISTING] Failed {list_url} ({http_err}).")
 
-        # 2. Xvfb + Chrome fallback if HTTP returned 0 candidates
+        # 2. Cross-platform browser fallback if HTTP returned 0 candidates
         if not candidates:
             from selenium.webdriver.common.by import By
             from selenium.webdriver.support import expected_conditions as EC
             from selenium.webdriver.support.ui import WebDriverWait
 
             logger.info(
-                "[HTTP LISTING] 0 static candidates; launching Xvfb + Chrome fallback..."
+                "[HTTP LISTING] 0 static candidates; launching browser fallback..."
             )
             drv = ensure_browser()
             for list_url in (TARGET_URL, ALT_CALENDAR_URL):
@@ -602,7 +594,8 @@ def scraper() -> pd.DataFrame:
 
     except Exception as e:
         logger.error(
-            f"[FATAL ERROR] Exception encountered during scraping loop: {e}", exc_info=True
+            f"[FATAL ERROR] Exception encountered during scraping loop: {e}",
+            exc_info=True,
         )
         return pd.DataFrame()
     finally:
@@ -613,10 +606,10 @@ def scraper() -> pd.DataFrame:
                 driver.quit()
             except Exception:
                 pass
-        if display:
-            logger.info("[CLEANUP] Stopping PyVirtualDisplay server...")
+        if disp_ctx is not None:
+            logger.info("[CLEANUP] Stopping virtual display context...")
             try:
-                display.stop()
+                disp_ctx.__exit__(None, None, None)
             except Exception:
                 pass
 

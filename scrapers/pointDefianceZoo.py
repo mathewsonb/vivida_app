@@ -1,16 +1,14 @@
 """
 pointDefianceZoo.py
 Autonomous Scraper for Point Defiance Zoo & Aquarium (Tacoma, WA).
-Uses Tribe REST API / HTTP-first listing with automatic Xvfb/Chrome hydration fallback,
+Uses Tribe REST API / HTTP-first listing with automatic cross-platform browser hydration fallback,
 concurrent detail-page fetching (workers=10), 4-tier hero image extraction,
 and centralized parse_event_dates normalization.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import glob
 import logging
 import re
-import shutil
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -24,9 +22,10 @@ from urllib3.util.retry import Retry
 from vivida_etl import (
     VividaIngestionPipeline,
     clean_html_source,
+    create_stealth_driver,
     fetch_event_text,
     parse_event_dates,
-    create_stealth_driver
+    virtual_display,
 )
 
 logging.basicConfig(
@@ -103,11 +102,14 @@ def normalize_event_group_key(detail_url: Optional[str], title: str) -> str:
     return title.lower()
 
 
-def fetch_via_tribe_api(session: requests.Session, max_pages: int = 5) -> List[Dict[str, Any]]:
+def fetch_via_tribe_api(
+    session: requests.Session, max_pages: int = 5
+) -> List[Dict[str, Any]]:
     """Fast-path: queries WordPress Tribe Events REST API if enabled on pdza.org."""
     grouped: Dict[str, Dict[str, Any]] = {}
-    now_str = pd.Timestamp.now(
-        tz="America/Los_Angeles").strftime("%Y-%m-%d 00:00:00")
+    now_str = pd.Timestamp.now(tz="America/Los_Angeles").strftime(
+        "%Y-%m-%d 00:00:00"
+    )
 
     for page in range(1, max_pages + 1):
         resp = session.get(
@@ -154,8 +156,6 @@ def fetch_via_tribe_api(session: requests.Session, max_pages: int = 5) -> List[D
 
             short_desc = strip_html_text(ev.get("excerpt"))
             full_desc = strip_html_text(ev.get("description"))
-            # img_obj = ev.get("image") if isinstance(
-            #     ev.get("image"), dict) else {}
 
             grouped[group_key] = {
                 "venue_name": DEFAULT_VENUE,
@@ -165,7 +165,6 @@ def fetch_via_tribe_api(session: requests.Session, max_pages: int = 5) -> List[D
                 "description": short_desc or full_desc[:250] or title,
                 "big_desc": full_desc or short_desc or title,
                 "external_url": detail_url,
-                # resolve_url(img_obj.get("url")),
                 "image_url": "https://www.pdza.org/wp-content/themes/pdza/dist/images/logo/logo-main.jpg",
                 "ticket_link": resolve_url(ev.get("website")) or detail_url,
             }
@@ -188,8 +187,7 @@ def extract_pdza_image(soup: BeautifulSoup) -> Optional[str]:
 
     # Tier 0: Direct PDZA Hero Container Inspection (<div class="hero" style="background-image: ...">)
     hero_div = soup.find("div", class_=re.compile(r"hero", re.I)) or soup.find(
-        lambda tag: tag.has_attr(
-            "style") and "background-image" in tag["style"]
+        lambda tag: tag.has_attr("style") and "background-image" in tag["style"]
     )
     if hero_div and hero_div.get("style"):
         match = re.search(
@@ -242,8 +240,7 @@ def find_listing_candidates(soup: BeautifulSoup) -> List[BeautifulSoup]:
 
     event_items = soup.find_all(
         ["article", "div"],
-        class_=re.compile(
-            r"event-card|tribe-events-single|type-tribe_events", re.I),
+        class_=re.compile(r"event-card|tribe-events-single|type-tribe_events", re.I),
     )
     if event_items:
         return event_items
@@ -273,9 +270,7 @@ def parse_detail_html(
     if not dates:
         detail_date_el = det_soup.find(
             "span",
-            class_=re.compile(
-                r"tribe-event-date-start|date-start|event-date", re.I
-            ),
+            class_=re.compile(r"tribe-event-date-start|date-start|event-date", re.I),
         ) or det_soup.find("div", class_=re.compile(r"date|schedule", re.I))
         if detail_date_el:
             dates = parse_event_dates(
@@ -287,8 +282,7 @@ def parse_detail_html(
         dates = parse_event_dates(body_text)
 
     section = (
-        det_soup.find("section", class_=re.compile(
-            r"single-event|content", re.I))
+        det_soup.find("section", class_=re.compile(r"single-event|content", re.I))
         or det_soup.find("main")
         or det_soup
     )
@@ -345,9 +339,8 @@ def fetch_detail_via_http(
 
 
 def scraper() -> pd.DataFrame:
-    """Scrapes PDZA events via API / HTTP-first with automatic Chrome hydration fallback."""
-    logger.info(
-        f"[START] Scraping Point Defiance Zoo & Aquarium: {TARGET_URL}")
+    """Scrapes PDZA events via API / HTTP-first with automatic browser hydration fallback."""
+    logger.info(f"[START] Scraping Point Defiance Zoo & Aquarium: {TARGET_URL}")
     session = build_http_session(pool_size=12)
 
     # 1. Probe Tribe REST API first
@@ -361,18 +354,18 @@ def scraper() -> pd.DataFrame:
     except Exception:
         pass
 
-    display = None
+    disp_ctx = None
+    active_disp = None
     driver = None
     event_items: List[BeautifulSoup] = []
 
     def ensure_browser():
-        nonlocal display, driver
+        nonlocal disp_ctx, active_disp, driver
+        if disp_ctx is None:
+            disp_ctx = virtual_display(size=(1920, 1080))
+            active_disp = disp_ctx.__enter__()
         if driver is None:
-            from pyvirtualdisplay import Display
-
-            display = Display(visible=0, size=(1920, 1080), backend="xvfb")
-            display.start()
-            driver = create_stealth_driver()
+            driver = create_stealth_driver(headless=(active_disp is None))
         return driver
 
     try:
@@ -380,8 +373,7 @@ def scraper() -> pd.DataFrame:
         try:
             resp = session.get(TARGET_URL, timeout=15)
             resp.raise_for_status()
-            soup_http = BeautifulSoup(
-                clean_html_source(resp.text), "html.parser")
+            soup_http = BeautifulSoup(clean_html_source(resp.text), "html.parser")
             candidates = find_listing_candidates(soup_http)
             if candidates:
                 event_items = candidates
@@ -390,11 +382,11 @@ def scraper() -> pd.DataFrame:
                 )
             else:
                 logger.info(
-                    "[HTTP LISTING] Page shell loaded with 0 static event cards; launching Xvfb + Chrome..."
+                    "[HTTP LISTING] Page shell loaded with 0 static event cards; launching browser fallback..."
                 )
         except Exception as http_err:
             logger.warning(
-                f"[HTTP LISTING] Failed ({http_err}); launching Xvfb + Chrome fallback..."
+                f"[HTTP LISTING] Failed ({http_err}); launching browser fallback..."
             )
 
         if not event_items:
@@ -418,7 +410,8 @@ def scraper() -> pd.DataFrame:
             time.sleep(2)
 
             soup_browser = BeautifulSoup(
-                clean_html_source(drv.page_source), "html.parser")
+                clean_html_source(drv.page_source), "html.parser"
+            )
             event_items = find_listing_candidates(soup_browser)
 
             ua = drv.execute_script("return navigator.userAgent;")
@@ -456,8 +449,7 @@ def scraper() -> pd.DataFrame:
                     ["h2", "h3", "h4", "a"], class_=re.compile(r"title", re.I)
                 )
                 if title_tag:
-                    card_title = normalize_ws(
-                        title_tag.get_text(" ", strip=True))
+                    card_title = normalize_ws(title_tag.get_text(" ", strip=True))
 
                 date_tag = item.find(
                     ["div", "span", "p"], class_=re.compile(r"date|time", re.I)
@@ -467,8 +459,7 @@ def scraper() -> pd.DataFrame:
                         normalize_ws(date_tag.get_text(" ", strip=True))
                     )
 
-            group_key = normalize_event_group_key(
-                full_url, card_title or full_url)
+            group_key = normalize_event_group_key(full_url, card_title or full_url)
             if group_key in staged_map:
                 staged_map[group_key]["dates_set"].update(card_dates)
                 continue
@@ -513,7 +504,7 @@ def scraper() -> pd.DataFrame:
 
         logger.info(
             f"HTTP detail batch complete: {len(enriched_items)} parsed, "
-            f"{len(fallback_queue)} queued for Chrome fallback."
+            f"{len(fallback_queue)} queued for browser fallback."
         )
 
         if fallback_queue:
@@ -524,11 +515,13 @@ def scraper() -> pd.DataFrame:
                     try:
                         drv.get(detail_url)
                         time.sleep(2)
-                        title, dates, description, big_desc, image_url, ticket_link = parse_detail_html(
-                            drv.page_source,
-                            item.get("title"),
-                            item["start_time"],
-                            detail_url,
+                        title, dates, description, big_desc, image_url, ticket_link = (
+                            parse_detail_html(
+                                drv.page_source,
+                                item.get("title"),
+                                item["start_time"],
+                                detail_url,
+                            )
                         )
                         item["title"] = title
                         item["start_time"] = dates
@@ -537,8 +530,7 @@ def scraper() -> pd.DataFrame:
                         item["image_url"] = image_url or item.get("image_url")
                         item["ticket_link"] = ticket_link
                     except Exception as fb_err:
-                        logger.warning(
-                            f"[FALLBACK WARN] Failed {detail_url}: {fb_err}")
+                        logger.warning(f"[FALLBACK WARN] Failed {detail_url}: {fb_err}")
                 enriched_items.append(item)
 
         raw_records = []
@@ -554,7 +546,9 @@ def scraper() -> pd.DataFrame:
 
     except Exception as e:
         logger.error(
-            f"[FATAL ERROR] Exception encountered during PDZA scraping loop: {e}", exc_info=True)
+            f"[FATAL ERROR] Exception encountered during PDZA scraping loop: {e}",
+            exc_info=True,
+        )
         return pd.DataFrame()
     finally:
         if driver:
@@ -563,10 +557,10 @@ def scraper() -> pd.DataFrame:
                 driver.quit()
             except Exception:
                 pass
-        if display:
-            logger.info("[CLEANUP] Stopping PyVirtualDisplay server...")
+        if disp_ctx is not None:
+            logger.info("[CLEANUP] Stopping virtual display context...")
             try:
-                display.stop()
+                disp_ctx.__exit__(None, None, None)
             except Exception:
                 pass
 
@@ -581,9 +575,11 @@ if __name__ == "__main__":
 
         if success:
             logger.info(
-                "[PIPELINE SUCCESS] PDZA scraper pipeline execution completed successfully.")
+                "[PIPELINE SUCCESS] PDZA scraper pipeline execution completed successfully."
+            )
         else:
             logger.error(
-                "[PIPELINE ERROR] PDZA scraper pipeline execution reported errors.")
+                "[PIPELINE ERROR] PDZA scraper pipeline execution reported errors."
+            )
     else:
         logger.warning("[EXIT] No events scraped. Exiting task.")

@@ -2,14 +2,12 @@
 puyallupFairgrounds.py
 Autonomous Scraper for Puyallup Fairgrounds / Washington State Fair (Puyallup, WA).
 Uses HTTP-first pagination & concurrent detail-page fetching (workers=10),
-with automatic Xvfb/Chrome hydration fallback and centralized parse_event_dates normalization.
+with automatic cross-platform browser hydration fallback and centralized parse_event_dates normalization.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import glob
 import logging
 import re
-import shutil
 import sys
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -23,9 +21,10 @@ from urllib3.util.retry import Retry
 from vivida_etl import (
     VividaIngestionPipeline,
     clean_html_source,
+    create_stealth_driver,
     fetch_event_text,
     parse_event_dates,
-    create_stealth_driver
+    virtual_display,
 )
 
 logging.basicConfig(
@@ -94,10 +93,11 @@ def build_http_session(pool_size: int = 12) -> requests.Session:
 def extract_valid_cards(html: str) -> List[BeautifulSoup]:
     """Parses listing HTML and isolates .event-card-large cards containing .event-card-large__info."""
     soup = BeautifulSoup(clean_html_source(html), "html.parser")
-    target_container = soup.find(
-        "div", class_=re.compile(r"container--md2")) or soup
+    target_container = soup.find("div", class_=re.compile(r"container--md2")) or soup
     event_items = target_container.find_all("div", class_="event-card-large")
-    return [card for card in event_items if card.find("div", class_="event-card-large__info")]
+    return [
+        card for card in event_items if card.find("div", class_="event-card-large__info")
+    ]
 
 
 def parse_detail_html(
@@ -112,7 +112,12 @@ def parse_detail_html(
     det_soup = BeautifulSoup(clean_html_source(html), "html.parser")
     if not det_soup:
         fallback_desc = card_desc or card_title
-        return current_dates, fallback_desc, fallback_desc, current_ticket or detail_url
+        return (
+            current_dates,
+            fallback_desc,
+            fallback_desc,
+            current_ticket or detail_url,
+        )
 
     dates = current_dates
     if not dates:
@@ -120,18 +125,17 @@ def parse_detail_html(
             "div", class_=re.compile(r"date|event-date|schedule", re.I)
         ) or det_soup.find("span", class_=re.compile(r"date", re.I))
         if det_date:
-            dates = parse_event_dates(normalize_ws(
-                det_date.get_text(" ", strip=True)))
+            dates = parse_event_dates(
+                normalize_ws(det_date.get_text(" ", strip=True))
+            )
 
     rich_text = fetch_event_text(det_soup)
-    big_desc = normalize_ws(rich_text) if rich_text else (
-        card_desc or card_title)
+    big_desc = normalize_ws(rich_text) if rich_text else (card_desc or card_title)
     description = card_desc or (big_desc[:250] if big_desc else card_title)
 
     ticket_link = current_ticket
     if not ticket_link:
-        t_btn = det_soup.find("a", href=re.compile(
-            r"ticket|buy|admission", re.I))
+        t_btn = det_soup.find("a", href=re.compile(r"ticket|buy|admission", re.I))
         if t_btn and t_btn.get("href"):
             ticket_link = resolve_url(t_btn["href"])
 
@@ -173,18 +177,18 @@ def scraper(max_pages: int = 20) -> pd.DataFrame:
     logger.info(f"[START] Scraping Puyallup Fairgrounds: {TARGET_URL}")
     session = build_http_session(pool_size=12)
 
-    display = None
+    disp_ctx = None
+    active_disp = None
     driver = None
     browser_synced = False
 
     def ensure_browser():
-        nonlocal display, driver
+        nonlocal disp_ctx, active_disp, driver
+        if disp_ctx is None:
+            disp_ctx = virtual_display(size=(1920, 1080))
+            active_disp = disp_ctx.__enter__()
         if driver is None:
-            from pyvirtualdisplay import Display
-
-            display = Display(visible=0, size=(1920, 1080), backend="xvfb")
-            display.start()
-            driver = create_stealth_driver()
+            driver = create_stealth_driver(headless=(active_disp is None))
         return driver
 
     grouped_items: Dict[str, Dict[str, Any]] = {}
@@ -215,7 +219,8 @@ def scraper(max_pages: int = 20) -> pd.DataFrame:
                 from selenium.webdriver.support.ui import WebDriverWait
 
                 logger.info(
-                    f"[SELENIUM FALLBACK] Rendering page {page}: {page_url}")
+                    f"[BROWSER FALLBACK] Rendering page {page}: {page_url}"
+                )
                 drv = ensure_browser()
                 drv.get(page_url)
                 try:
@@ -244,7 +249,8 @@ def scraper(max_pages: int = 20) -> pd.DataFrame:
 
             if not valid_cards:
                 logger.info(
-                    f"[PARSER END] No further event cards found on page {page}. Ending pagination.")
+                    f"[PARSER END] No further event cards found on page {page}. Ending pagination."
+                )
                 break
 
             page_titles: List[str] = []
@@ -252,13 +258,14 @@ def scraper(max_pages: int = 20) -> pd.DataFrame:
             for idx, event in enumerate(valid_cards, start=1):
                 try:
                     info_container = event.find(
-                        "div", class_="event-card-large__info")
+                        "div", class_="event-card-large__info"
+                    )
                     if not info_container:
                         continue
 
-                    h3_tag = info_container.find("h3", class_="title") or info_container.find(
-                        ["h3", "h2", "h4"]
-                    )
+                    h3_tag = info_container.find(
+                        "h3", class_="title"
+                    ) or info_container.find(["h3", "h2", "h4"])
                     if not h3_tag:
                         continue
 
@@ -267,53 +274,61 @@ def scraper(max_pages: int = 20) -> pd.DataFrame:
                         continue
                     page_titles.append(title.lower())
 
-                    anchor = h3_tag.find(
-                        "a", href=True) or info_container.find("a", href=True)
-                    detail_url = resolve_url(
-                        anchor["href"]) if anchor else None
+                    anchor = h3_tag.find("a", href=True) or info_container.find(
+                        "a", href=True
+                    )
+                    detail_url = resolve_url(anchor["href"]) if anchor else None
 
                     card_desc: Optional[str] = None
                     start_time_list: List[str] = []
 
                     icon_texts = info_container.find_all(
-                        "div", class_="icon-text")
+                        "div", class_="icon-text"
+                    )
                     for div in icon_texts:
                         div_copy = BeautifulSoup(str(div), "html.parser")
                         for svg in div_copy.find_all("svg"):
                             svg.decompose()
 
-                        raw_text = normalize_ws(
-                            div_copy.get_text(" ", strip=True))
+                        raw_text = normalize_ws(div_copy.get_text(" ", strip=True))
                         span_tag = div.find("span")
-                        if span_tag and normalize_ws(span_tag.get_text(" ", strip=True)):
+                        if span_tag and normalize_ws(
+                            span_tag.get_text(" ", strip=True)
+                        ):
                             card_desc = normalize_ws(
-                                span_tag.get_text(" ", strip=True))
-                        elif re.search(rf"\b{MONTH_NAMES}\b", raw_text, re.I) and not start_time_list:
+                                span_tag.get_text(" ", strip=True)
+                            )
+                        elif (
+                            re.search(rf"\b{MONTH_NAMES}\b", raw_text, re.I)
+                            and not start_time_list
+                        ):
                             start_time_list = parse_event_dates(raw_text)
 
                     dedup_key = detail_url or title.lower()
                     if dedup_key in grouped_items:
                         grouped_items[dedup_key]["dates_set"].update(
-                            start_time_list)
+                            start_time_list
+                        )
                         continue
 
                     img_tag = event.find("img", src=True) or event.find(
                         "img", attrs={"data-src": True}
                     )
                     image_url = (
-                        resolve_url(img_tag.get("data-src")
-                                    or img_tag.get("src"))
+                        resolve_url(img_tag.get("data-src") or img_tag.get("src"))
                         if img_tag
                         else None
                     )
 
                     ticket_link: Optional[str] = None
                     buttons_div = event.find(
-                        "div", class_=re.compile(r"event-card-large__buttons|buttons", re.I)
+                        "div",
+                        class_=re.compile(r"event-card-large__buttons|buttons", re.I),
                     )
                     if buttons_div:
                         t_anchor = buttons_div.find(
-                            "a", href=re.compile(r"ticket", re.I))
+                            "a", href=re.compile(r"ticket", re.I)
+                        )
                         if t_anchor and t_anchor.get("href"):
                             ticket_link = resolve_url(t_anchor["href"])
 
@@ -338,7 +353,8 @@ def scraper(max_pages: int = 20) -> pd.DataFrame:
             sig = tuple(page_titles)
             if sig in seen_page_signatures:
                 logger.info(
-                    f"[PARSER END] Page {page} repeated prior page content; stopping pagination.")
+                    f"[PARSER END] Page {page} repeated prior page content; stopping pagination."
+                )
                 break
             seen_page_signatures.add(sig)
             page += 1
@@ -371,7 +387,7 @@ def scraper(max_pages: int = 20) -> pd.DataFrame:
 
         logger.info(
             f"HTTP detail batch complete: {len(enriched_items)} parsed, "
-            f"{len(fallback_queue)} queued for Chrome fallback."
+            f"{len(fallback_queue)} queued for browser fallback."
         )
 
         if fallback_queue:
@@ -395,8 +411,7 @@ def scraper(max_pages: int = 20) -> pd.DataFrame:
                         item["big_desc"] = big_desc
                         item["ticket_link"] = ticket_link
                     except Exception as fb_err:
-                        logger.warning(
-                            f"[FALLBACK WARN] Failed {detail_url}: {fb_err}")
+                        logger.warning(f"[FALLBACK WARN] Failed {detail_url}: {fb_err}")
                 enriched_items.append(item)
 
         raw_records = []
@@ -404,7 +419,8 @@ def scraper(max_pages: int = 20) -> pd.DataFrame:
             item.pop("_card_desc", None)
             if not item.get("start_time"):
                 logger.warning(
-                    f"[SKIP] No valid dates parsed for '{item.get('title')}'.")
+                    f"[SKIP] No valid dates parsed for '{item.get('title')}'."
+                )
                 continue
             raw_records.append(item)
 
@@ -412,7 +428,9 @@ def scraper(max_pages: int = 20) -> pd.DataFrame:
 
     except Exception as e:
         logger.error(
-            f"[FATAL ERROR] Exception encountered during scraping loop: {e}", exc_info=True)
+            f"[FATAL ERROR] Exception encountered during scraping loop: {e}",
+            exc_info=True,
+        )
         return pd.DataFrame()
     finally:
         if driver:
@@ -421,10 +439,10 @@ def scraper(max_pages: int = 20) -> pd.DataFrame:
                 driver.quit()
             except Exception:
                 pass
-        if display:
-            logger.info("[CLEANUP] Stopping PyVirtualDisplay server...")
+        if disp_ctx is not None:
+            logger.info("[CLEANUP] Stopping virtual display context...")
             try:
-                display.stop()
+                disp_ctx.__exit__(None, None, None)
             except Exception:
                 pass
 
@@ -438,9 +456,11 @@ if __name__ == "__main__":
         success = pipeline.run_standalone_pipeline(raw_df)
         if success:
             logger.info(
-                "[PIPELINE SUCCESS] Puyallup Fairgrounds scraper execution completed successfully.")
+                "[PIPELINE SUCCESS] Puyallup Fairgrounds scraper execution completed successfully."
+            )
         else:
             logger.error(
-                "[PIPELINE ERROR] Puyallup Fairgrounds scraper pipeline execution reported errors.")
+                "[PIPELINE ERROR] Puyallup Fairgrounds scraper pipeline execution reported errors."
+            )
     else:
         logger.warning("[EXIT] No events scraped. Pipeline handoff skipped.")

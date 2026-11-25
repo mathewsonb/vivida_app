@@ -10,6 +10,7 @@ and routes consolidated records to VividaIngestionPipeline.
 import html
 import json
 import logging
+import os
 import re
 import sys
 from typing import Any, Dict, List, Optional, Tuple
@@ -33,7 +34,9 @@ logging.basicConfig(
 logger = logging.getLogger("scrape_tacoma_comedy_club")
 
 BASE_URL = "https://www.tacomacomedyclub.com"
-TARGET_URL = "https://www.tacomacomedyclub.com/events"
+TARGET_URL = (
+    os.getenv("TCC_EVENTS_URL") or "https://www.tacomacomedyclub.com/events"
+).strip()
 DEFAULT_VENUE = "Tacoma Comedy Club"
 DEFAULT_ADDRESS = "933 Market Street, Tacoma, WA 98402"
 SECONDARY_ADDRESS = "3829 6th Ave, Tacoma, WA 98406"
@@ -90,7 +93,9 @@ def extract_jsonld_image(raw_image: Any) -> Optional[str]:
     return None
 
 
-def extract_offer_details(evt: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+def extract_offer_details(
+    evt: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[str]]:
     """Extracts checkout URL and price summary from schema.org offers block."""
     offers = evt.get("offers")
     if isinstance(offers, list):
@@ -115,7 +120,8 @@ def extract_offer_details(evt: Dict[str, Any]) -> Tuple[Optional[str], Optional[
                 currency = str(offer.get("priceCurrency") or "$").strip()
                 prefix = "$" if currency == "USD" else currency
                 prices.append(
-                    f"{prefix}{p_str}" if not p_str.startswith("$") else p_str)
+                    f"{prefix}{p_str}" if not p_str.startswith("$") else p_str
+                )
 
     price_note = f"Tickets: {', '.join(dict.fromkeys(prices))}." if prices else None
     return offer_url, price_note
@@ -150,7 +156,9 @@ def is_event_entity(obj: Any) -> bool:
     if isinstance(t, str):
         return t == "Event" or t.endswith("Event")
     if isinstance(t, list):
-        return any(isinstance(x, str) and (x == "Event" or x.endswith("Event")) for x in t)
+        return any(
+            isinstance(x, str) and (x == "Event" or x.endswith("Event")) for x in t
+        )
     return False
 
 
@@ -205,8 +213,7 @@ def scraper() -> pd.DataFrame:
                 break
 
             soup = BeautifulSoup(response.text, "html.parser")
-            json_ld_scripts = soup.find_all(
-                "script", type="application/ld+json")
+            json_ld_scripts = soup.find_all("script", type="application/ld+json")
 
             for script in json_ld_scripts:
                 raw_json = script.string or script.get_text()
@@ -218,16 +225,13 @@ def scraper() -> pd.DataFrame:
                 except json.JSONDecodeError:
                     continue
 
-            next_link = soup.find(
-                "link", rel="next") or soup.find("a", rel="next")
-            next_url = resolve_url(next_link.get(
-                "href")) if next_link else None
+            next_link = soup.find("link", rel="next") or soup.find("a", rel="next")
+            next_url = resolve_url(next_link.get("href")) if next_link else None
     finally:
         session.close()
 
     if not events_raw:
-        logger.error(
-            "[PARSER ERROR] No JSON-LD Event objects extracted from page.")
+        logger.error("[PARSER ERROR] No JSON-LD Event objects extracted from page.")
         return pd.DataFrame()
 
     logger.info(
@@ -266,12 +270,12 @@ def scraper() -> pd.DataFrame:
         external_url = event_url or offer_url
 
         age_range = normalize_ws(evt.get("typicalAgeRange"))
-        llm_notes = [
-            f"Age Restriction: {age_range}." if age_range else None,
-            price_note,
-            "Venue default is typically 18+ or 21+ unless stated All Ages." if not age_range else None,
-        ]
-        enrichment_suffix = " ".join(n for n in llm_notes if n)
+        age_note = (
+            f"Age Restriction: {age_range}."
+            if age_range
+            else "Age Restriction: 18+ or 21+ unless stated otherwise."
+        )
+        enrichment_suffix = " ".join(n for n in (age_note, price_note) if n)
         base_desc = cleaned_text or clean_title
         rich_big_desc = f"{base_desc} {enrichment_suffix}".strip()
 
@@ -302,8 +306,7 @@ def scraper() -> pd.DataFrame:
                 entry["external_url"] = external_url
 
     if skipped_cancelled:
-        logger.info(
-            f"[SKIP] Excluded {skipped_cancelled} cancelled JSON-LD entries.")
+        logger.info(f"[SKIP] Excluded {skipped_cancelled} cancelled JSON-LD entries.")
     if skipped_no_date:
         logger.warning(
             f"[SKIP] Dropped {skipped_no_date} JSON-LD entries with unparseable startDate."
