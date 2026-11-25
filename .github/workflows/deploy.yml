@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,11 +13,14 @@ permissions:
 
 concurrency:
   group: 'pages'
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - name: Checkout Code
@@ -54,11 +58,10 @@ jobs:
         uses: actions/configure-pages@v5
 
       - name: Upload Build Artifacts
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: './dist'
 
       - name: Deploy to GitHub Pages
         id: deployment
-        # Note: environment scope is handled internally by deploy-pages action here
         uses: actions/deploy-pages@v4
