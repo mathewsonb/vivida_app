@@ -1,4 +1,36 @@
 ==============================================================================
+VIVIDA DAILY ETL SUMMARY | 2026-11-27 12:01:00 PST
+Tasks Run: 23 | Healthy: 21 | Needs Attention: 2
+------------------------------------------------------------------------------
+ACTION NEEDED:
+  [0 EVENTS] Metro Parks Tacoma (scrapers.tacomaParksAndRec) -> Returned 0 events (check selectors/API)
+  [0 EVENTS] Visit Tacoma / Pierce County (scrapers.tacomaPierceCountyEvents) -> Returned 0 events (check selectors/API)
+------------------------------------------------------------------------------
+HEALTHY MODULES:
+  [OK] Emerald Queen Casino (scrapers.emeraldQueenCasino) -> 8 events synced
+  [OK] Cider & Cedar (scrapers.ciderAndCedar) -> 8 events synced
+  [OK] City of University Place (scrapers.cityOfUniversityPlace) -> 2 events synced
+  [OK] Doyle's Pub (scrapers.doylesPublicHouse) -> 16 events synced
+  [OK] Federal Way PAEC (scrapers.federalWayPerformingArtsCenter) -> 33 events synced
+  [OK] Gig Harbor Events (scrapers.gigHarbor) -> 4 events synced
+  [OK] Jazzbones (scrapers.jazzbones) -> 9 events synced
+  [OK] McMenamins Elks Temple (scrapers.mcmenaminsElksTemple) -> 57 events synced
+  [OK] New Frontier Lounge (scrapers.newFrontierLounge) -> 25 events synced
+  [OK] Odd Otter Brewing (scrapers.oddOtterBrewing) -> 23 events synced
+  [OK] Point Defiance Zoo & Aquarium (scrapers.pointDefianceZoo) -> 23 events synced
+  [OK] The Proctor District (scrapers.proctorDistrict) -> 49 events synced
+  [OK] Puyallup Fairgrounds (scrapers.puyallupFairgrounds) -> 9 events synced
+  [OK] Tacoma Art Museum (scrapers.tacomaArtMuseum) -> 19 events synced
+  [OK] Tacoma Arts Live (scrapers.tacomaArtsLive) -> 18 events synced
+  [OK] Tacoma Arts Monthly (scrapers.tacomaArtsMonth) -> 125 events synced
+  [OK] Tacoma Comedy Club (scrapers.tacomaComedyClub) -> 95 events synced
+  [OK] Tacoma Dome (scrapers.tacomaDome) -> 9 events synced
+  [OK] Tacoma City Theaters (scrapers.tacomaTheaters) -> 30 events synced
+  [OK] The Spar Tavern (scrapers.theSparTavern) -> 12 events synced
+  [OK] The Valley Tacoma (scrapers.theValley) -> 9 events synced
+==============================================================================
+
+==============================================================================
 VIVIDA DAILY ETL SUMMARY | 2026-11-26 12:15:46 PST
 Tasks Run: 23 | Healthy: 22 | Needs Attention: 1
 ------------------------------------------------------------------------------
